@@ -11,7 +11,7 @@
 */
 
 const SUPABASE_URL = "https://rkfolrgkbmoonxqbaidz.supabase.co";
-const SUPABASE_PUBLIC_KEY = "cole_a_publishable_key_completa_aqui";
+const SUPABASE_PUBLIC_KEY = "sb_publishable_-YY7uHaK8tfayZIwylroeg_JL8id6dE";
 
 const CONFIG_OK = SUPABASE_URL.startsWith("https://") && !SUPABASE_PUBLIC_KEY.includes("COLE_AQUI");
 const sb = CONFIG_OK ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLIC_KEY) : null;
