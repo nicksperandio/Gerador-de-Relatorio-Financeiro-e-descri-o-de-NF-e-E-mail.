@@ -1,13 +1,9 @@
 /*
-  Clínica ÚNick | Sistema Financeiro + Nota Fiscal
-  GitHub Pages + Supabase
-
-  1) Crie o projeto no Supabase.
-  2) Execute o arquivo supabase.sql no SQL Editor.
-  3) Cole abaixo a URL do projeto e a chave pública/publishable key.
-  4) Publique estes arquivos no GitHub Pages.
+  Núcleo ÚNick | Sistema Financeiro e Gestão v3
+  GitHub Pages + Supabase Auth + Database + Storage
 
   Nunca coloque service_role/secret key neste arquivo.
+  Use somente a Publishable Key/anon public do Supabase.
 */
 
 const SUPABASE_URL = "https://rkfolrgkbmoonxqbaidz.supabase.co";
@@ -21,15 +17,24 @@ const state = {
   patients: [],
   guardians: [],
   patientGuardians: [],
+  teamMembers: [],
   records: [],
   settings: null,
+  attachments: [],
+  patientDocuments: [],
+  teamDocuments: [],
+  pendingAttachmentFiles: [],
+  pendingPatientDocuments: [],
+  pendingTeamDocuments: [],
   activeRecordForPdf: null,
 };
 
-const monthNames = [
-  "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
-];
+const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+const brazilStates = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"];
+const countries = ["Brasil","Argentina","Bolívia","Canadá","Chile","Colômbia","Espanha","Estados Unidos","França","Itália","Japão","México","Paraguai","Peru","Portugal","Uruguai","Venezuela","Outro"];
+const ATTACHMENTS_BUCKET = "financial-record-attachments";
+const PATIENT_DOCS_BUCKET = "patient-documents";
+const TEAM_DOCS_BUCKET = "team-member-documents";
 
 const $ = (id) => document.getElementById(id);
 const money = (value) => Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -39,7 +44,15 @@ const escapeHTML = (value = "") => String(value).replace(/[&<>"']/g, (m) => ({ "
 const nl2br = (value = "") => escapeHTML(value).replace(/\n/g, "<br>");
 const dateBR = (iso) => iso ? iso.split("-").reverse().join("/") : "";
 const monthYearText = (month, year) => month && year ? `${monthNames[Number(month) - 1]} de ${year}` : "";
-const isDeletedNull = { deleted_at: null };
+const ageFromBirth = (iso) => {
+  if (!iso) return "-";
+  const birth = new Date(iso + "T00:00:00");
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const m = today.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+  return Number.isFinite(age) ? `${age} anos` : "-";
+};
 
 function showToast(message, type = "ok") {
   const toast = $("toast");
@@ -50,835 +63,204 @@ function showToast(message, type = "ok") {
   toast.classList.add("show");
   setTimeout(() => toast.classList.remove("show"), 3000);
 }
+function handleError(error, fallback = "Ocorreu um erro.") { console.error(error); showToast(error?.message || fallback, "error"); }
+function setLoading(button, loading, text = "Salvando...") { if (!button) return; if (loading) { button.dataset.originalText = button.textContent; button.textContent = text; button.disabled = true; } else { button.textContent = button.dataset.originalText || button.textContent; button.disabled = false; } }
+function statusBadge(status) { const s = status || "ativo"; const cls = s === "ativo" ? "ok" : s === "arquivado" ? "archived" : "warn"; return `<span class="badge ${cls}">${escapeHTML(s)}</span>`; }
 
-function handleError(error, fallback = "Ocorreu um erro.") {
-  console.error(error);
-  showToast(error?.message || fallback, "error");
-}
-
-function setLoading(button, loading, text = "Salvando...") {
-  if (!button) return;
-  if (loading) {
-    button.dataset.originalText = button.textContent;
-    button.textContent = text;
-    button.disabled = true;
-  } else {
-    button.textContent = button.dataset.originalText || button.textContent;
-    button.disabled = false;
-  }
+function initStaticSelects() {
+  const monthOptions = '<option value="">Selecione</option>' + monthNames.map((name, i) => `<option value="${i + 1}">${name}</option>`).join("");
+  ["recordMonth", "filterMonth"].forEach((id) => { if ($(id)) $(id).innerHTML = id === "filterMonth" ? '<option value="">Todos</option>' + monthOptions.replace('<option value="">Selecione</option>', '') : monthOptions; });
+  const stateOptions = '<option value="">Selecione</option>' + brazilStates.map((uf) => `<option value="${uf}">${uf}</option>`).join("");
+  ["patientState", "teamState"].forEach((id) => { if ($(id)) $(id).innerHTML = stateOptions; });
+  const countryOptions = '<option value="">Selecione</option>' + countries.map((c) => `<option>${c}</option>`).join("");
+  ["patientCountry", "teamCountry"].forEach((id) => { if ($(id)) $(id).innerHTML = countryOptions; });
+  if ($("recordYear")) $("recordYear").value = currentYear();
+  if ($("recordIssueDate")) $("recordIssueDate").value = todayISO();
 }
 
 function setScreen(screenId) {
   document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
-  $(screenId).classList.add("active");
+  $(screenId)?.classList.add("active");
   document.querySelectorAll(".menu-btn").forEach((b) => b.classList.toggle("active", b.dataset.screen === screenId));
-
   const titles = {
-    dashboardScreen: ["Início", "Resumo do sistema financeiro."],
-    patientsScreen: ["Pacientes", "Cadastro, edição, pesquisa e exclusão lógica de pacientes."],
+    dashboardScreen: ["Início", "Resumo do sistema."],
+    patientsScreen: ["Pacientes", "Cadastro completo, anexos, arquivamento e histórico."],
+    teamScreen: ["Equipe", "Cadastro de profissionais, documentos e dados de pagamento."],
     guardiansScreen: ["Responsáveis", "Responsáveis financeiros/legais vinculados aos pacientes."],
-    financialFormScreen: ["Nova Ficha Financeira", "Preencha os dados e gere descrição da NF e PDF."],
+    financialFormScreen: ["Nova Ficha Financeira", "Preencha os dados, selecione paciente/profissional, anexe imagens e gere PDF."],
     recordsScreen: ["Fichas Salvas", "Busque, visualize, edite, exclua e gere PDFs."],
-    settingsScreen: ["Configurações da Clínica", "Dados fixos usados nas fichas e nos PDFs."],
+    settingsScreen: ["Configurações da Clínica", "Dados fixos usados nas fichas e PDFs."],
   };
-
   $("screenTitle").textContent = titles[screenId]?.[0] || "Sistema";
   $("screenSubtitle").textContent = titles[screenId]?.[1] || "";
-
   if (screenId === "recordsScreen") renderRecordsList();
 }
 
-function initStaticSelects() {
-  const monthOptions = '<option value="">Selecione</option>' + monthNames.map((name, i) => `<option value="${i + 1}">${name}</option>`).join("");
-  ["recordMonth", "filterMonth"].forEach((id) => { $(id).innerHTML = monthOptions; });
-  $("recordYear").value = currentYear();
-  $("recordIssueDate").value = todayISO();
-}
-
-function showAuthView() {
-  $("authView").classList.remove("hidden");
-  $("appView").classList.add("hidden");
-}
-
-function showAppView() {
-  $("authView").classList.add("hidden");
-  $("appView").classList.remove("hidden");
-  $("userEmail").textContent = state.user?.email || "";
-}
+function showAuthView() { $("authView").classList.remove("hidden"); $("appView").classList.add("hidden"); }
+function showAppView() { $("authView").classList.add("hidden"); $("appView").classList.remove("hidden"); $("userEmail").textContent = state.user?.email || ""; }
 
 async function checkSession() {
-  if (!CONFIG_OK) {
-    $("configAlert").classList.remove("hidden");
-    showAuthView();
-    return;
-  }
-
+  if (!CONFIG_OK) { $("configAlert").classList.remove("hidden"); showAuthView(); return; }
   const { data, error } = await sb.auth.getSession();
   if (error) return handleError(error);
-
   state.user = data.session?.user || null;
-  if (state.user) {
-    showAppView();
-    await loadAllData();
-  } else {
-    showAuthView();
-  }
-
+  if (state.user) { showAppView(); await loadAllData(); } else { showAuthView(); }
   sb.auth.onAuthStateChange(async (_event, session) => {
     state.user = session?.user || null;
-    if (state.user) {
-      showAppView();
-      await loadAllData();
-    } else {
-      showAuthView();
-    }
+    if (state.user) { showAppView(); await loadAllData(); } else { showAuthView(); }
   });
 }
-
-async function signIn(event) {
-  event.preventDefault();
-  if (!CONFIG_OK) return showToast("Configure o Supabase antes de entrar.", "error");
-  const button = event.submitter;
-  setLoading(button, true, "Entrando...");
-  const { error } = await sb.auth.signInWithPassword({
-    email: $("loginEmail").value.trim(),
-    password: $("loginPassword").value,
-  });
-  setLoading(button, false);
-  if (error) return handleError(error, "Não foi possível entrar.");
-  showToast("Login realizado com sucesso!");
-}
-
-async function signUp(event) {
-  event.preventDefault();
-  if (!CONFIG_OK) return showToast("Configure o Supabase antes de cadastrar.", "error");
-  const button = event.submitter;
-  setLoading(button, true, "Criando...");
-  const { error } = await sb.auth.signUp({
-    email: $("signupEmail").value.trim(),
-    password: $("signupPassword").value,
-    options: { data: { full_name: $("signupName").value.trim() } },
-  });
-  setLoading(button, false);
-  if (error) return handleError(error, "Não foi possível criar o cadastro.");
-  showToast("Cadastro criado. Verifique seu e-mail se a confirmação estiver ativada.");
-}
-
-async function signOut() {
-  const { error } = await sb.auth.signOut();
-  if (error) return handleError(error);
-}
+async function signIn(event) { event.preventDefault(); const button = event.submitter; setLoading(button, true, "Entrando..."); const { error } = await sb.auth.signInWithPassword({ email: $("loginEmail").value.trim(), password: $("loginPassword").value }); setLoading(button, false); if (error) return handleError(error, "Não foi possível entrar."); showToast("Login realizado!"); }
+async function signUp(event) { event.preventDefault(); const button = event.submitter; setLoading(button, true, "Criando..."); const { error } = await sb.auth.signUp({ email: $("signupEmail").value.trim(), password: $("signupPassword").value, options: { data: { full_name: $("signupName").value.trim() } } }); setLoading(button, false); if (error) return handleError(error, "Não foi possível criar o cadastro."); showToast("Cadastro criado. Verifique o e-mail se a confirmação estiver ativada."); }
+async function signOut() { const { error } = await sb.auth.signOut(); if (error) return handleError(error); }
 
 async function loadAllData() {
-  await Promise.all([
-    loadSettings(),
-    loadPatients(),
-    loadGuardians(),
-    loadPatientGuardians(),
-    loadFinancialRecords(),
-  ]);
+  await Promise.all([loadSettings(), loadPatients(), loadGuardians(), loadPatientGuardians(), loadTeamMembers(), loadFinancialRecords(), loadAttachments(), loadPatientDocuments(), loadTeamDocuments()]);
   renderEverything();
 }
-
-async function loadSettings() {
-  const { data, error } = await sb.from("clinic_settings").select("*").maybeSingle();
-  if (error) return handleError(error, "Erro ao carregar configurações.");
-  state.settings = data || null;
-  renderSettingsForm();
-}
-
-async function loadPatients() {
-  const { data, error } = await sb.from("patients").select("*").is("deleted_at", null).order("full_name");
-  if (error) return handleError(error, "Erro ao carregar pacientes.");
-  state.patients = data || [];
-}
-
-async function loadGuardians() {
-  const { data, error } = await sb.from("guardians").select("*").is("deleted_at", null).order("full_name");
-  if (error) return handleError(error, "Erro ao carregar responsáveis.");
-  state.guardians = data || [];
-}
-
-async function loadPatientGuardians() {
-  const { data, error } = await sb.from("patient_guardians").select("*").is("deleted_at", null);
-  if (error) return handleError(error, "Erro ao carregar vínculos.");
-  state.patientGuardians = data || [];
-}
-
-async function loadFinancialRecords() {
-  const { data, error } = await sb
-    .from("financial_records")
-    .select("*, patients(full_name), guardians(full_name)")
-    .is("deleted_at", null)
-    .order("reference_year", { ascending: false })
-    .order("reference_month", { ascending: false });
-  if (error) return handleError(error, "Erro ao carregar fichas.");
-  state.records = data || [];
-}
+async function loadSettings() { const { data, error } = await sb.from("clinic_settings").select("*").maybeSingle(); if (error) return handleError(error, "Erro ao carregar configurações."); state.settings = data || null; renderSettingsForm(); }
+async function loadPatients() { const { data, error } = await sb.from("patients").select("*").is("deleted_at", null).order("full_name"); if (error) return handleError(error, "Erro ao carregar pacientes."); state.patients = data || []; }
+async function loadGuardians() { const { data, error } = await sb.from("guardians").select("*").is("deleted_at", null).order("full_name"); if (error) return handleError(error, "Erro ao carregar responsáveis."); state.guardians = data || []; }
+async function loadPatientGuardians() { const { data, error } = await sb.from("patient_guardians").select("*").is("deleted_at", null); if (error) return handleError(error, "Erro ao carregar vínculos."); state.patientGuardians = data || []; }
+async function loadTeamMembers() { const { data, error } = await sb.from("team_members").select("*").is("deleted_at", null).order("full_name"); if (error) return handleError(error, "Erro ao carregar equipe. Execute a migração v3 no Supabase."); state.teamMembers = data || []; }
+async function loadFinancialRecords() { const { data, error } = await sb.from("financial_records").select("*, patients(full_name), guardians(full_name), team_members(full_name, practice_area, professional_registry)").is("deleted_at", null).order("reference_year", { ascending: false }).order("reference_month", { ascending: false }); if (error) return handleError(error, "Erro ao carregar fichas."); state.records = data || []; }
+async function loadAttachments() { const { data, error } = await sb.from("financial_record_attachments").select("*").is("deleted_at", null).order("display_order", { ascending: true }).order("created_at", { ascending: true }); if (error) return handleError(error, "Erro ao carregar anexos."); state.attachments = data || []; }
+async function loadPatientDocuments() { const { data, error } = await sb.from("patient_documents").select("*").is("deleted_at", null).order("created_at", { ascending: false }); if (error) { console.warn(error); state.patientDocuments = []; return; } state.patientDocuments = data || []; }
+async function loadTeamDocuments() { const { data, error } = await sb.from("team_member_documents").select("*").is("deleted_at", null).order("created_at", { ascending: false }); if (error) { console.warn(error); state.teamDocuments = []; return; } state.teamDocuments = data || []; }
 
 function renderEverything() {
-  renderMetrics();
-  renderPatientOptions();
-  renderGuardianOptions();
-  renderPatientsList();
-  renderGuardiansList();
-  renderRecordsList();
-  calculateRecordTotals();
+  renderMetrics(); renderPatientOptions(); renderGuardianOptions(); renderTeamOptions(); renderPatientsList(); renderGuardiansList(); renderTeamList(); renderRecordsList(); calculateRecordTotals(); renderAttachmentsPanel(); renderPatientDocumentsPanel(); renderTeamDocumentsPanel();
 }
-
-function renderMetrics() {
-  $("metricPatients").textContent = state.patients.filter((p) => p.status === "ativo").length;
-  $("metricGuardians").textContent = state.guardians.length;
-  $("metricRecords").textContent = state.records.length;
-  const total = state.records.reduce((sum, r) => sum + Number(r.total_value || 0), 0);
-  $("metricMonthTotal").textContent = money(total);
-}
+function renderMetrics() { $("metricPatients").textContent = state.patients.filter((p) => p.status === "ativo").length; $("metricArchivedPatients").textContent = state.patients.filter((p) => p.status === "arquivado").length; $("metricTeam").textContent = state.teamMembers.filter((t) => t.status === "ativo").length; $("metricRecords").textContent = state.records.length; $("metricMonthTotal").textContent = money(state.records.reduce((sum, r) => sum + Number(r.total_value || 0), 0)); }
 
 function renderPatientOptions() {
-  const options = '<option value="">Selecione</option>' + state.patients.map((p) => `<option value="${p.id}">${escapeHTML(p.full_name)}</option>`).join("");
-  ["recordPatient", "filterPatient"].forEach((id) => { $(id).innerHTML = id === "filterPatient" ? '<option value="">Todos</option>' + options.replace('<option value="">Selecione</option>', '') : options; });
-
-  $("guardianPatients").innerHTML = state.patients.map((p) => `<option value="${p.id}">${escapeHTML(p.full_name)}</option>`).join("");
+  const activePatients = state.patients.filter((p) => p.status !== "arquivado");
+  const recordOptions = '<option value="">Selecione</option>' + activePatients.map((p) => `<option value="${p.id}">${escapeHTML(p.full_name)}</option>`).join("");
+  if ($("recordPatient")) $("recordPatient").innerHTML = recordOptions;
+  if ($("filterPatient")) $("filterPatient").innerHTML = '<option value="">Todos</option>' + state.patients.map((p) => `<option value="${p.id}">${escapeHTML(p.full_name)}</option>`).join("");
+  if ($("guardianPatients")) $("guardianPatients").innerHTML = activePatients.map((p) => `<option value="${p.id}">${escapeHTML(p.full_name)}</option>`).join("");
 }
-
+function renderTeamOptions() {
+  const active = state.teamMembers.filter((t) => t.status !== "arquivado");
+  const options = '<option value="">Selecionar da equipe ou preencher manualmente</option>' + active.map((t) => `<option value="${t.id}">${escapeHTML(t.full_name)}${t.practice_area ? ` | ${escapeHTML(t.practice_area)}` : ""}</option>`).join("");
+  if ($("recordTeamMember")) $("recordTeamMember").innerHTML = options;
+}
 function renderGuardianOptions(patientId = null) {
   let guardians = state.guardians;
-  if (patientId) {
-    const linkedIds = state.patientGuardians.filter((l) => l.patient_id === patientId).map((l) => l.guardian_id);
-    guardians = state.guardians.filter((g) => linkedIds.includes(g.id));
-  }
-  const options = '<option value="">Selecione</option>' + guardians.map((g) => `<option value="${g.id}">${escapeHTML(g.full_name)}</option>`).join("");
-  $("recordGuardian").innerHTML = options;
-  $("filterGuardian").innerHTML = '<option value="">Todos</option>' + state.guardians.map((g) => `<option value="${g.id}">${escapeHTML(g.full_name)}</option>`).join("");
+  if (patientId) { const linkedIds = state.patientGuardians.filter((l) => l.patient_id === patientId).map((l) => l.guardian_id); guardians = state.guardians.filter((g) => linkedIds.includes(g.id)); }
+  if ($("recordGuardian")) $("recordGuardian").innerHTML = '<option value="">Selecione</option>' + guardians.map((g) => `<option value="${g.id}">${escapeHTML(g.full_name)}</option>`).join("");
+  if ($("filterGuardian")) $("filterGuardian").innerHTML = '<option value="">Todos</option>' + state.guardians.map((g) => `<option value="${g.id}">${escapeHTML(g.full_name)}</option>`).join("");
 }
+function guardianNamesForPatient(patientId) { const ids = state.patientGuardians.filter((l) => l.patient_id === patientId).map((l) => l.guardian_id); return state.guardians.filter((g) => ids.includes(g.id)).map((g) => g.full_name).join(", "); }
 
-function guardianNamesForPatient(patientId) {
-  const ids = state.patientGuardians.filter((l) => l.patient_id === patientId).map((l) => l.guardian_id);
-  return state.guardians.filter((g) => ids.includes(g.id)).map((g) => g.full_name).join(", ");
-}
+const patientFieldMap = {
+  patientName:"full_name", patientBirthDate:"birth_date", patientSex:"sex", patientDiagnosis:"diagnosis", patientCpf:"cpf", patientRg:"rg", patientIssuingAgency:"issuing_agency", patientMaritalStatus:"marital_status", patientPhone:"phone", patientEmail:"email", patientCountry:"country", patientCep:"cep", patientState:"state", patientCity:"city", patientNeighborhood:"neighborhood", patientStreet:"street", patientNumber:"number", patientComplement:"complement", patientFatherName:"father_name", patientFatherCpf:"father_cpf", patientFatherIssuingAgency:"father_issuing_agency", patientFatherPhone:"father_phone", patientFatherEmail:"father_email", patientMotherName:"mother_name", patientMotherCpf:"mother_cpf", patientMotherIssuingAgency:"mother_issuing_agency", patientMotherPhone:"mother_phone", patientMotherEmail:"mother_email", patientTherapyStartDate:"therapy_start_date", patientNotes:"admin_notes", patientStatus:"status", patientHealthInsurance:"health_insurance"
+};
+function payloadFromMap(map) { const payload = {}; Object.entries(map).forEach(([id, key]) => { const el = $(id); if (!el) return; let value = el.value; if (value === "") value = null; payload[key] = value; }); return payload; }
+function fillFromMap(map, obj) { Object.entries(map).forEach(([id, key]) => { if ($(id)) $(id).value = obj?.[key] || ""; }); }
 
+function showPatientForm() { $("patientForm").classList.remove("hidden"); $("patientForm").scrollIntoView({ behavior: "smooth", block: "start" }); }
 async function savePatient(event) {
   event.preventDefault();
   const id = $("patientId").value;
-  const payload = {
-    full_name: $("patientName").value.trim(),
-    birth_date: $("patientBirthDate").value || null,
-    status: $("patientStatus").value,
-    admin_notes: $("patientNotes").value.trim() || null,
-  };
-
-  const button = event.submitter;
-  setLoading(button, true);
-  const { error } = id
-    ? await sb.from("patients").update(payload).eq("id", id)
-    : await sb.from("patients").insert(payload);
+  const payload = payloadFromMap(patientFieldMap);
+  if (!payload.full_name) return showToast("Informe o nome do paciente.", "error");
+  const button = event.submitter; setLoading(button, true);
+  let patientId = id, error;
+  if (id) ({ error } = await sb.from("patients").update(payload).eq("id", id));
+  else { const result = await sb.from("patients").insert(payload).select("id").single(); error = result.error; patientId = result.data?.id; }
+  if (!error && patientId) { try { await uploadGenericDocuments("patient", patientId); } catch(e) { error = e; } }
   setLoading(button, false);
-
   if (error) return handleError(error, "Erro ao salvar paciente.");
-  clearPatientForm();
-  await loadPatients();
-  await loadPatientGuardians();
-  renderEverything();
-  showToast("Paciente salvo!");
+  await Promise.all([loadPatients(), loadPatientDocuments()]); renderEverything(); $("patientId").value = patientId; $("patientFormTitle").textContent = "Editar paciente"; showToast("Paciente salvo!");
 }
-
-function editPatient(id) {
-  const p = state.patients.find((x) => x.id === id);
-  if (!p) return;
-  $("patientId").value = p.id;
-  $("patientName").value = p.full_name || "";
-  $("patientBirthDate").value = p.birth_date || "";
-  $("patientStatus").value = p.status || "ativo";
-  $("patientNotes").value = p.admin_notes || "";
-  $("patientFormTitle").textContent = "Editar paciente";
-  setScreen("patientsScreen");
-}
-
-function clearPatientForm() {
-  $("patientForm").reset();
-  $("patientId").value = "";
-  $("patientStatus").value = "ativo";
-  $("patientFormTitle").textContent = "Cadastrar paciente";
-}
-
-async function deletePatient(id) {
-  if (!confirm("Tem certeza que deseja excluir este registro? Essa ação não poderá ser desfeita.")) return;
-  const { error } = await sb.from("patients").update({ deleted_at: new Date().toISOString() }).eq("id", id);
-  if (error) return handleError(error, "Erro ao excluir paciente.");
-  await loadAllData();
-  showToast("Paciente excluído logicamente.");
-}
-
+function editPatient(id) { const p = state.patients.find((x) => x.id === id); if (!p) return; $("patientId").value = p.id; fillFromMap(patientFieldMap, p); $("patientFormTitle").textContent = "Editar paciente"; showPatientForm(); renderPatientDocumentsPanel(); }
+function clearPatientForm() { $("patientForm").reset(); $("patientId").value = ""; $("patientStatus").value = "ativo"; $("patientCountry").value = "Brasil"; $("patientState").value = "SC"; state.pendingPatientDocuments = []; $("patientFormTitle").textContent = "Cadastrar novo paciente"; renderPatientDocumentsPanel(); }
+async function archivePatient(id) { const motivo = prompt("Motivo do arquivamento: Alta do paciente, Transferência, Desligamento ou Outro motivo."); if (!motivo) return; const obs = prompt("Observação sobre o arquivamento, se necessário:") || ""; const { error } = await sb.from("patients").update({ status: "arquivado", archive_reason: motivo, archive_notes: obs, archived_at: new Date().toISOString() }).eq("id", id); if (error) return handleError(error, "Erro ao arquivar paciente."); await loadPatients(); renderEverything(); showToast("Paciente arquivado."); }
+async function deletePatient(id) { if (!confirm("Tem certeza que deseja excluir este registro? Essa ação não poderá ser desfeita.")) return; const { error } = await sb.from("patients").update({ deleted_at: new Date().toISOString() }).eq("id", id); if (error) return handleError(error, "Erro ao excluir paciente."); await loadPatients(); renderEverything(); showToast("Paciente excluído logicamente."); }
+function viewPatient(id) { const p = state.patients.find((x) => x.id === id); if (!p) return; const docs = docsFor("patient", id); $("viewModalTitle").textContent = `Paciente: ${p.full_name || ""}`; $("viewModalBody").innerHTML = profileHtml([
+  ["Nome", p.full_name], ["Idade", ageFromBirth(p.birth_date)], ["Sexo", p.sex], ["Diagnóstico", p.diagnosis], ["CPF", p.cpf], ["RG", p.rg], ["Org. Emissor/UF", p.issuing_agency], ["Telefone", p.phone], ["E-mail", p.email], ["Convênio", p.health_insurance], ["Cidade", p.city], ["Estado", p.state], ["Endereço", [p.street, p.number, p.neighborhood, p.city, p.state].filter(Boolean).join(", ")], ["Pai", p.father_name], ["Mãe", p.mother_name], ["Início da terapia", dateBR(p.therapy_start_date)], ["Status", p.status], ["Motivo arquivamento", p.archive_reason], ["Mais informações", p.admin_notes]
+], docs); $("viewModal").classList.remove("hidden"); }
 function renderPatientsList() {
-  const search = ($("patientSearch").value || "").toLowerCase();
-  const items = state.patients.filter((p) => p.full_name.toLowerCase().includes(search));
-  $("patientsList").innerHTML = items.length ? items.map((p) => `
-    <div class="item">
-      <div>
-        <strong>${escapeHTML(p.full_name)}</strong>
-        <span>Status: ${escapeHTML(p.status || "ativo")} ${p.birth_date ? `• Nasc.: ${dateBR(p.birth_date)}` : ""}</span>
-        <span>Responsável(is): ${escapeHTML(guardianNamesForPatient(p.id) || "não vinculado")}</span>
-      </div>
-      <div class="item-actions">
-        <button class="outline" type="button" onclick="editPatient('${p.id}')">Editar</button>
-        <button class="danger" type="button" onclick="deletePatient('${p.id}')">Excluir</button>
-      </div>
-    </div>`).join("") : '<div class="empty">Nenhum paciente encontrado.</div>';
+  const search = ($("patientSearch").value || "").toLowerCase(); const filter = $("patientStatusFilter").value;
+  const items = state.patients.filter((p) => (!search || (p.full_name || "").toLowerCase().includes(search)) && (filter === "todos" || (filter === "arquivados" ? p.status === "arquivado" : p.status !== "arquivado")));
+  $("patientsList").innerHTML = items.length ? `<table class="data-table"><thead><tr><th>Paciente</th><th>Idade</th><th>Sexo</th><th>Cidade</th><th>Convênio</th><th>Histórico</th><th>Ações</th></tr></thead><tbody>${items.map((p)=>`<tr><td><strong>${escapeHTML(p.full_name)}</strong><br><span class="small">${escapeHTML(guardianNamesForPatient(p.id) || "sem responsável vinculado")}</span></td><td>${ageFromBirth(p.birth_date)}</td><td>${escapeHTML(p.sex || "-")}</td><td>${escapeHTML(p.city || "-")}</td><td>${escapeHTML(p.health_insurance || "-")}</td><td>${statusBadge(p.status)}<br><span class="small">${escapeHTML(p.diagnosis || p.archive_reason || "-")}</span></td><td><div class="item-actions"><button class="outline" onclick="viewPatient('${p.id}')">Ver</button><button class="outline" onclick="editPatient('${p.id}')">Editar</button><button class="secondary" onclick="archivePatient('${p.id}')">Arquivar</button><button class="danger" onclick="deletePatient('${p.id}')">Excluir</button></div></td></tr>`).join("")}</tbody></table>` : '<div class="empty">Nenhum paciente encontrado.</div>';
 }
 
-async function saveGuardian(event) {
-  event.preventDefault();
-  const id = $("guardianId").value;
-  const selectedPatients = Array.from($("guardianPatients").selectedOptions).map((o) => o.value);
-  const payload = {
-    full_name: $("guardianName").value.trim(),
-    cpf: $("guardianCpf").value.trim() || null,
-    email: $("guardianEmail").value.trim() || null,
-    phone: $("guardianPhone").value.trim() || null,
-    address: $("guardianAddress").value.trim() || null,
-    relationship: $("guardianRelationship").value,
-  };
+const teamFieldMap = { teamName:"full_name", teamType:"person_type", teamBirthDate:"birth_date", teamSex:"sex", teamCpf:"cpf", teamRg:"rg", teamIssuingAgency:"issuing_agency", teamMaritalStatus:"marital_status", teamPhone:"phone", teamWhatsapp:"whatsapp", teamEmail:"email", teamCountry:"country", teamCep:"cep", teamState:"state", teamCity:"city", teamNeighborhood:"neighborhood", teamStreet:"street", teamNumber:"number", teamComplement:"complement", teamPracticeArea:"practice_area", teamProfessionalRegistry:"professional_registry", teamEmergencyPhone:"emergency_phone", teamEmergencyRelationship:"emergency_relationship", teamBankName:"bank_name", teamBankAgency:"bank_agency", teamBankAccount:"bank_account", teamPaymentMethods:"payment_methods", teamPjData:"pj_data", teamStatus:"status" };
+function showTeamForm() { $("teamForm").classList.remove("hidden"); $("teamForm").scrollIntoView({ behavior: "smooth", block: "start" }); }
+async function saveTeamMember(event) { event.preventDefault(); const id = $("teamId").value; const payload = payloadFromMap(teamFieldMap); if (!payload.full_name) return showToast("Informe o nome do profissional.", "error"); const button = event.submitter; setLoading(button, true); let teamId = id, error; if (id) ({ error } = await sb.from("team_members").update(payload).eq("id", id)); else { const result = await sb.from("team_members").insert(payload).select("id").single(); error = result.error; teamId = result.data?.id; } if (!error && teamId) { try { await uploadGenericDocuments("team", teamId); } catch(e) { error = e; } } setLoading(button, false); if (error) return handleError(error, "Erro ao salvar profissional."); await Promise.all([loadTeamMembers(), loadTeamDocuments()]); renderEverything(); $("teamId").value = teamId; $("teamFormTitle").textContent = "Editar profissional"; showToast("Profissional salvo!"); }
+function editTeamMember(id) { const t = state.teamMembers.find((x) => x.id === id); if (!t) return; $("teamId").value = t.id; fillFromMap(teamFieldMap, t); $("teamFormTitle").textContent = "Editar profissional"; showTeamForm(); renderTeamDocumentsPanel(); }
+function clearTeamForm() { $("teamForm").reset(); $("teamId").value = ""; $("teamStatus").value = "ativo"; $("teamType").value = "Pessoa Física"; $("teamCountry").value = "Brasil"; $("teamState").value = "SC"; state.pendingTeamDocuments = []; $("teamFormTitle").textContent = "Cadastrar novo membro"; renderTeamDocumentsPanel(); }
+async function archiveTeamMember(id) { const motivo = prompt("Motivo do arquivamento/desligamento: Profissional saiu da equipe, Desligamento pela clínica, Encerramento de parceria, Pausa temporária ou Outro motivo."); if (!motivo) return; const obs = prompt("Observação sobre o arquivamento/desligamento, se necessário:") || ""; const { error } = await sb.from("team_members").update({ status: "arquivado", archive_reason: motivo, archive_notes: obs, archived_at: new Date().toISOString() }).eq("id", id); if (error) return handleError(error, "Erro ao arquivar profissional."); await loadTeamMembers(); renderEverything(); showToast("Profissional arquivado."); }
+async function deleteTeamMember(id) { if (!confirm("Tem certeza que deseja excluir este registro? Essa ação não poderá ser desfeita.")) return; const { error } = await sb.from("team_members").update({ deleted_at: new Date().toISOString() }).eq("id", id); if (error) return handleError(error, "Erro ao excluir profissional."); await loadTeamMembers(); renderEverything(); showToast("Profissional excluído logicamente."); }
+function viewTeamMember(id) { const t = state.teamMembers.find((x) => x.id === id); if (!t) return; const docs = docsFor("team", id); $("viewModalTitle").textContent = `Profissional: ${t.full_name || ""}`; $("viewModalBody").innerHTML = profileHtml([["Nome", t.full_name], ["Tipo", t.person_type], ["Idade", ageFromBirth(t.birth_date)], ["Sexo", t.sex], ["CPF", t.cpf], ["RG", t.rg], ["Área de atuação", t.practice_area], ["Registro", t.professional_registry], ["WhatsApp", t.whatsapp], ["E-mail", t.email], ["Cidade", t.city], ["Banco", t.bank_name], ["Agência", t.bank_agency], ["Conta", t.bank_account], ["Formas de pagamento", t.payment_methods], ["PJ/CNPJ", t.pj_data], ["Status", t.status], ["Motivo arquivamento", t.archive_reason]], docs); $("viewModal").classList.remove("hidden"); }
+function renderTeamList() { const search = ($("teamSearch")?.value || "").toLowerCase(); const filter = $("teamStatusFilter")?.value || "ativos"; const items = state.teamMembers.filter((t) => (!search || (t.full_name || "").toLowerCase().includes(search)) && (filter === "todos" || (filter === "arquivados" ? t.status === "arquivado" : t.status !== "arquivado"))); if (!$("teamList")) return; $("teamList").innerHTML = items.length ? `<table class="data-table"><thead><tr><th>Nome Completo do Profissional</th><th>Data de Nascimento</th><th>Área de Atuação</th><th>Nº de Registro</th><th>Status</th><th>Ações</th></tr></thead><tbody>${items.map((t)=>`<tr><td><strong>${escapeHTML(t.full_name)}</strong><br><span class="small">${escapeHTML(t.email || "")}</span></td><td>${dateBR(t.birth_date) || "-"}</td><td>${escapeHTML(t.practice_area || "-")}</td><td>${escapeHTML(t.professional_registry || "-")}</td><td>${statusBadge(t.status)}</td><td><div class="item-actions"><button class="outline" onclick="viewTeamMember('${t.id}')">Ver</button><button class="outline" onclick="editTeamMember('${t.id}')">Editar</button><button class="secondary" onclick="archiveTeamMember('${t.id}')">Arquivar</button><button class="danger" onclick="deleteTeamMember('${t.id}')">Excluir</button></div></td></tr>`).join("")}</tbody></table>` : '<div class="empty">Nenhum profissional encontrado.</div>'; }
 
-  const button = event.submitter;
-  setLoading(button, true);
+function profileHtml(rows, docs) { return `<div class="profile-grid">${rows.map(([k,v]) => `<div><strong>${escapeHTML(k)}</strong>${nl2br(v || "-")}</div>`).join("")}</div><h3>Anexos</h3>${docs.length ? docs.map((d) => `<div class="doc-item"><div><strong>${escapeHTML(d.file_name)}</strong><span>${escapeHTML(d.file_type || "arquivo")}</span></div><button class="outline" onclick="openDocument('${d.kind}','${d.id}')">Abrir</button></div>`).join("") : '<div class="empty">Nenhum anexo salvo.</div>'}`; }
 
-  let guardianId = id;
-  let error;
-  if (id) {
-    ({ error } = await sb.from("guardians").update(payload).eq("id", id));
-  } else {
-    const result = await sb.from("guardians").insert(payload).select("id").single();
-    error = result.error;
-    guardianId = result.data?.id;
-  }
+function docsFor(kind, ownerId) { return kind === "patient" ? state.patientDocuments.filter((d) => d.patient_id === ownerId) : state.teamDocuments.filter((d) => d.team_member_id === ownerId); }
+function handleGenericDocumentSelection(kind, event) { const files = Array.from(event.target.files || []); const target = kind === "patient" ? state.pendingPatientDocuments : state.pendingTeamDocuments; files.forEach((file) => target.push({ id: `pending_${Date.now()}_${Math.random().toString(36).slice(2)}`, file })); kind === "patient" ? renderPatientDocumentsPanel() : renderTeamDocumentsPanel(); }
+function removePendingGenericDocument(kind, id) { const key = kind === "patient" ? "pendingPatientDocuments" : "pendingTeamDocuments"; state[key] = state[key].filter((d) => d.id !== id); kind === "patient" ? renderPatientDocumentsPanel() : renderTeamDocumentsPanel(); }
+async function uploadGenericDocuments(kind, ownerId) { const pendingKey = kind === "patient" ? "pendingPatientDocuments" : "pendingTeamDocuments"; const bucket = kind === "patient" ? PATIENT_DOCS_BUCKET : TEAM_DOCS_BUCKET; const table = kind === "patient" ? "patient_documents" : "team_member_documents"; const ownerField = kind === "patient" ? "patient_id" : "team_member_id"; const pending = state[pendingKey]; if (!ownerId || !pending.length) return; const rows = []; for (let i = 0; i < pending.length; i++) { const file = pending[i].file; const cleanName = file.name.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 90); const filePath = `${state.user.id}/${ownerId}/${Date.now()}-${i+1}-${cleanName}`; const { error: uploadError } = await sb.storage.from(bucket).upload(filePath, file, { contentType: file.type || "application/octet-stream", upsert: false }); if (uploadError) throw uploadError; rows.push({ [ownerField]: ownerId, file_name: file.name, file_path: filePath, file_type: file.type, file_size: file.size }); } const { error } = await sb.from(table).insert(rows); if (error) throw error; state[pendingKey] = []; const input = kind === "patient" ? $("patientDocumentInput") : $("teamDocumentInput"); if (input) input.value = ""; }
+function renderPatientDocumentsPanel() { if (!$("patientPendingDocuments")) return; const id = $("patientId").value; $("patientPendingDocuments").innerHTML = state.pendingPatientDocuments.length ? state.pendingPatientDocuments.map((d) => `<div class="doc-item"><div><strong>${escapeHTML(d.file.name)}</strong><span>Será salvo ao clicar em Salvar</span></div><button class="danger small-btn" type="button" onclick="removePendingGenericDocument('patient','${d.id}')">Remover</button></div>`).join("") : '<div class="empty compact-empty">Nenhum arquivo selecionado.</div>'; const docs = docsFor("patient", id); $("patientSavedDocuments").innerHTML = docs.length ? docs.map((d)=>`<div class="doc-item"><div><strong>${escapeHTML(d.file_name)}</strong><span>${escapeHTML(d.file_type || "arquivo")}</span></div><div class="item-actions"><button class="outline small-btn" type="button" onclick="openDocument('patient','${d.id}')">Abrir</button><button class="danger small-btn" type="button" onclick="removeGenericDocument('patient','${d.id}')">Remover</button></div></div>`).join("") : '<div class="empty compact-empty">Nenhum arquivo salvo.</div>'; }
+function renderTeamDocumentsPanel() { if (!$("teamPendingDocuments")) return; const id = $("teamId").value; $("teamPendingDocuments").innerHTML = state.pendingTeamDocuments.length ? state.pendingTeamDocuments.map((d) => `<div class="doc-item"><div><strong>${escapeHTML(d.file.name)}</strong><span>Será salvo ao clicar em Salvar</span></div><button class="danger small-btn" type="button" onclick="removePendingGenericDocument('team','${d.id}')">Remover</button></div>`).join("") : '<div class="empty compact-empty">Nenhum arquivo selecionado.</div>'; const docs = docsFor("team", id); $("teamSavedDocuments").innerHTML = docs.length ? docs.map((d)=>`<div class="doc-item"><div><strong>${escapeHTML(d.file_name)}</strong><span>${escapeHTML(d.file_type || "arquivo")}</span></div><div class="item-actions"><button class="outline small-btn" type="button" onclick="openDocument('team','${d.id}')">Abrir</button><button class="danger small-btn" type="button" onclick="removeGenericDocument('team','${d.id}')">Remover</button></div></div>`).join("") : '<div class="empty compact-empty">Nenhum arquivo salvo.</div>'; }
+async function openDocument(kind, id) { const list = kind === "patient" ? state.patientDocuments : state.teamDocuments; const doc = list.find((d) => d.id === id); if (!doc) return; const bucket = kind === "patient" ? PATIENT_DOCS_BUCKET : TEAM_DOCS_BUCKET; const { data, error } = await sb.storage.from(bucket).createSignedUrl(doc.file_path, 60 * 10); if (error) return handleError(error, "Erro ao abrir anexo."); window.open(data.signedUrl, "_blank"); }
+async function removeGenericDocument(kind, id) { if (!confirm("Tem certeza que deseja remover este anexo?")) return; const table = kind === "patient" ? "patient_documents" : "team_member_documents"; const bucket = kind === "patient" ? PATIENT_DOCS_BUCKET : TEAM_DOCS_BUCKET; const list = kind === "patient" ? state.patientDocuments : state.teamDocuments; const doc = list.find((d) => d.id === id); const { error } = await sb.from(table).update({ deleted_at: new Date().toISOString() }).eq("id", id); if (error) return handleError(error, "Erro ao remover anexo."); if (doc?.file_path) await sb.storage.from(bucket).remove([doc.file_path]); kind === "patient" ? await loadPatientDocuments() : await loadTeamDocuments(); kind === "patient" ? renderPatientDocumentsPanel() : renderTeamDocumentsPanel(); showToast("Anexo removido."); }
 
-  if (!error && guardianId) {
-    await sb.from("patient_guardians").update({ deleted_at: new Date().toISOString() }).eq("guardian_id", guardianId).is("deleted_at", null);
-    if (selectedPatients.length) {
-      const links = selectedPatients.map((patient_id) => ({ patient_id, guardian_id: guardianId }));
-      const linkResult = await sb.from("patient_guardians").insert(links);
-      error = linkResult.error;
-    }
-  }
+// Responsáveis
+async function saveGuardian(event) { event.preventDefault(); const id = $("guardianId").value; const selectedPatients = Array.from($("guardianPatients").selectedOptions).map((o) => o.value); const payload = { full_name: $("guardianName").value.trim(), cpf: $("guardianCpf").value.trim() || null, email: $("guardianEmail").value.trim() || null, phone: $("guardianPhone").value.trim() || null, address: $("guardianAddress").value.trim() || null, relationship: $("guardianRelationship").value }; const button = event.submitter; setLoading(button, true); let guardianId = id, error; if (id) ({ error } = await sb.from("guardians").update(payload).eq("id", id)); else { const result = await sb.from("guardians").insert(payload).select("id").single(); error = result.error; guardianId = result.data?.id; } if (!error && guardianId) { await sb.from("patient_guardians").update({ deleted_at: new Date().toISOString() }).eq("guardian_id", guardianId).is("deleted_at", null); if (selectedPatients.length) { const links = selectedPatients.map((patient_id) => ({ patient_id, guardian_id: guardianId })); const linkResult = await sb.from("patient_guardians").insert(links); error = linkResult.error; } } setLoading(button, false); if (error) return handleError(error, "Erro ao salvar responsável."); clearGuardianForm(); await Promise.all([loadGuardians(), loadPatientGuardians()]); renderEverything(); showToast("Responsável salvo!"); }
+function editGuardian(id) { const g = state.guardians.find((x) => x.id === id); if (!g) return; $("guardianId").value = g.id; $("guardianName").value = g.full_name || ""; $("guardianCpf").value = g.cpf || ""; $("guardianEmail").value = g.email || ""; $("guardianPhone").value = g.phone || ""; $("guardianAddress").value = g.address || ""; $("guardianRelationship").value = g.relationship || "outro"; Array.from($("guardianPatients").options).forEach((opt) => opt.selected = state.patientGuardians.some((l) => l.guardian_id === id && l.patient_id === opt.value)); $("guardianFormTitle").textContent = "Editar responsável"; setScreen("guardiansScreen"); }
+function clearGuardianForm() { $("guardianForm").reset(); $("guardianId").value = ""; $("guardianRelationship").value = "mãe"; Array.from($("guardianPatients").options).forEach((opt) => opt.selected = false); $("guardianFormTitle").textContent = "Cadastrar responsável"; }
+async function deleteGuardian(id) { if (!confirm("Tem certeza que deseja excluir este registro? Essa ação não poderá ser desfeita.")) return; const now = new Date().toISOString(); let { error } = await sb.from("guardians").update({ deleted_at: now }).eq("id", id); if (!error) ({ error } = await sb.from("patient_guardians").update({ deleted_at: now }).eq("guardian_id", id).is("deleted_at", null)); if (error) return handleError(error, "Erro ao excluir responsável."); await loadAllData(); showToast("Responsável excluído logicamente."); }
+function renderGuardiansList() { const search = ($("guardianSearch")?.value || "").toLowerCase(); const items = state.guardians.filter((g) => (g.full_name || "").toLowerCase().includes(search)); $("guardiansList").innerHTML = items.length ? items.map((g) => { const patientIds = state.patientGuardians.filter((l) => l.guardian_id === g.id).map((l) => l.patient_id); const patientNames = state.patients.filter((p) => patientIds.includes(p.id)).map((p) => p.full_name).join(", "); return `<div class="item"><div><strong>${escapeHTML(g.full_name)}</strong><span>${escapeHTML(g.relationship || "Responsável")} ${g.phone ? `• ${escapeHTML(g.phone)}` : ""} ${g.email ? `• ${escapeHTML(g.email)}` : ""}</span><span>Paciente(s): ${escapeHTML(patientNames || "não vinculado")}</span></div><div class="item-actions"><button class="outline" type="button" onclick="editGuardian('${g.id}')">Editar</button><button class="danger" type="button" onclick="deleteGuardian('${g.id}')">Excluir</button></div></div>`; }).join("") : '<div class="empty">Nenhum responsável encontrado.</div>'; }
 
-  setLoading(button, false);
-  if (error) return handleError(error, "Erro ao salvar responsável.");
-  clearGuardianForm();
-  await loadGuardians();
-  await loadPatientGuardians();
-  renderEverything();
-  showToast("Responsável salvo!");
-}
+// Anexos da ficha financeira
+function recordAttachments(recordId) { if (!recordId) return []; return state.attachments.filter((a) => a.record_id === recordId && !a.deleted_at); }
+function resetPendingAttachments() { state.pendingAttachmentFiles = []; if ($("recordAttachmentInput")) $("recordAttachmentInput").value = ""; renderAttachmentsPanel(); }
+function handleAttachmentSelection(event) { const files = Array.from(event.target.files || []); const valid = files.filter((file) => file.type.startsWith("image/")); if (valid.length !== files.length) showToast("Alguns arquivos foram ignorados. Selecione apenas imagens.", "error"); state.pendingAttachmentFiles.push(...valid.map((file) => ({ id: `pending_${Date.now()}_${Math.random().toString(36).slice(2)}`, file, previewUrl: URL.createObjectURL(file) }))); renderAttachmentsPanel(); }
+function removePendingAttachment(id) { const item = state.pendingAttachmentFiles.find((a) => a.id === id); if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl); state.pendingAttachmentFiles = state.pendingAttachmentFiles.filter((a) => a.id !== id); renderAttachmentsPanel(); }
+async function removeSavedAttachment(id) { if (!confirm("Tem certeza que deseja remover esta imagem anexada?")) return; const attachment = state.attachments.find((a) => a.id === id); const { error } = await sb.from("financial_record_attachments").update({ deleted_at: new Date().toISOString() }).eq("id", id); if (error) return handleError(error, "Erro ao remover anexo."); if (attachment?.file_path) await sb.storage.from(ATTACHMENTS_BUCKET).remove([attachment.file_path]); await loadAttachments(); renderAttachmentsPanel(); showToast("Anexo removido."); }
+async function uploadPendingAttachments(recordId) { if (!recordId || !state.pendingAttachmentFiles.length) return; const currentSavedCount = recordAttachments(recordId).length; const inserts = []; for (let i = 0; i < state.pendingAttachmentFiles.length; i++) { const item = state.pendingAttachmentFiles[i]; const file = item.file; const cleanName = file.name.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 80); const filePath = `${state.user.id}/${recordId}/${Date.now()}-${i + 1}-${cleanName}`; const { error: uploadError } = await sb.storage.from(ATTACHMENTS_BUCKET).upload(filePath, file, { contentType: file.type || "image/jpeg", upsert: false }); if (uploadError) throw uploadError; inserts.push({ record_id: recordId, file_name: file.name, file_path: filePath, file_type: file.type || "image/jpeg", file_size: file.size, display_order: currentSavedCount + i + 1 }); } if (inserts.length) { const { error } = await sb.from("financial_record_attachments").insert(inserts); if (error) throw error; } state.pendingAttachmentFiles.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl)); state.pendingAttachmentFiles = []; if ($("recordAttachmentInput")) $("recordAttachmentInput").value = ""; await loadAttachments(); }
+async function signedUrlForAttachment(attachment) { const { data, error } = await sb.storage.from(ATTACHMENTS_BUCKET).createSignedUrl(attachment.file_path, 60 * 10); if (error) throw error; return data.signedUrl; }
+function renderAttachmentsPanel() { const savedList = $("savedAttachmentsList"); const pendingList = $("pendingAttachmentsList"); const currentRecordId = $("recordId")?.value; if (!savedList || !pendingList) return; const saved = recordAttachments(currentRecordId); savedList.innerHTML = saved.length ? saved.map((a, index) => `<div class="attachment-item"><div><strong>Imagem salva ${index + 1}</strong><span>${escapeHTML(a.file_name || "Imagem anexada")}</span></div><button class="danger small-btn" type="button" onclick="removeSavedAttachment('${a.id}')">Remover</button></div>`).join("") : '<div class="empty compact-empty">Nenhuma imagem salva nesta ficha.</div>'; pendingList.innerHTML = state.pendingAttachmentFiles.length ? state.pendingAttachmentFiles.map((a, index) => `<div class="attachment-item"><img src="${a.previewUrl}" alt="Prévia ${index + 1}" /><div><strong>Imagem para enviar ${index + 1}</strong><span>${escapeHTML(a.file.name)} • será salva quando clicar em Salvar ficha</span></div><button class="danger small-btn" type="button" onclick="removePendingAttachment('${a.id}')">Remover</button></div>`).join("") : '<div class="empty compact-empty">Nenhuma imagem selecionada para envio.</div>'; }
 
-function editGuardian(id) {
-  const g = state.guardians.find((x) => x.id === id);
-  if (!g) return;
-  $("guardianId").value = g.id;
-  $("guardianName").value = g.full_name || "";
-  $("guardianCpf").value = g.cpf || "";
-  $("guardianEmail").value = g.email || "";
-  $("guardianPhone").value = g.phone || "";
-  $("guardianAddress").value = g.address || "";
-  $("guardianRelationship").value = g.relationship || "outro";
-  Array.from($("guardianPatients").options).forEach((opt) => {
-    opt.selected = state.patientGuardians.some((l) => l.guardian_id === id && l.patient_id === opt.value);
-  });
-  $("guardianFormTitle").textContent = "Editar responsável";
-  setScreen("guardiansScreen");
-}
+// Sessões e fichas financeiras
+function addSessionRow(session = {}) { const container = $("sessionsContainer"); const index = container.children.length + 1; const row = document.createElement("div"); row.className = "session-row"; row.innerHTML = `<div class="num">${index}</div><label>Data<input class="session-date" type="date" value="${session.date || ""}" /></label><label>Início<input class="session-start" type="time" value="${session.start_time || ""}" /></label><label>Fim<input class="session-end" type="time" value="${session.end_time || ""}" /></label><label>Duração<input class="session-duration" type="text" value="${session.duration || "50 minutos"}" /></label><label>Qtd.<input class="session-quantity" type="number" min="1" step="1" value="${session.quantity || 1}" /></label><label>Tipo/observação<input class="session-type" type="text" value="${escapeHTML(session.type || "Atendimento")}" /></label><button class="danger" type="button" title="Remover">×</button>`; row.querySelector("button").addEventListener("click", () => { row.remove(); renumberSessions(); calculateRecordTotals(); }); row.querySelectorAll("input").forEach((input) => input.addEventListener("input", calculateRecordTotals)); container.appendChild(row); calculateRecordTotals(); }
+function renumberSessions() { Array.from($("sessionsContainer").children).forEach((row, i) => row.querySelector(".num").textContent = i + 1); }
+function getSessions() { return Array.from($("sessionsContainer").children).map((row) => ({ date: row.querySelector(".session-date").value || null, start_time: row.querySelector(".session-start").value || null, end_time: row.querySelector(".session-end").value || null, duration: row.querySelector(".session-duration").value.trim() || null, quantity: Number(row.querySelector(".session-quantity").value || 1), type: row.querySelector(".session-type").value.trim() || null })).filter((s) => s.date || s.type); }
+function sessionsSummary(sessions) { const map = new Map(); sessions.forEach((s) => { if (!s.date) return; map.set(s.date, (map.get(s.date) || 0) + Number(s.quantity || 1)); }); return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, qtd]) => qtd > 1 ? `${dateBR(date)} (${qtd} sessões)` : dateBR(date)).join(", "); }
+function calculateRecordTotals() { const sessions = getSessions(); const totalSessions = sessions.reduce((sum, s) => sum + Number(s.quantity || 1), 0); const sessionValue = Number($("recordSessionValue")?.value || 0); if ($("totalSessionsLabel")) $("totalSessionsLabel").textContent = totalSessions; if ($("totalValueLabel")) $("totalValueLabel").textContent = money(totalSessions * sessionValue); if ($("datesSummaryLabel")) $("datesSummaryLabel").textContent = sessionsSummary(sessions) || "-"; }
+function selectedProfessionalName() { const team = state.teamMembers.find((t) => t.id === $("recordTeamMember")?.value); return $("recordAttendingProfessional")?.value.trim() || team?.full_name || getSettingsSafe().professional_name || ""; }
+function buildNfDescriptionFromForm() { const patient = state.patients.find((p) => p.id === $("recordPatient").value); const sessions = getSessions(); const totalSessions = sessions.reduce((sum, s) => sum + Number(s.quantity || 1), 0); const service = $("recordServiceModality").value; const month = Number($("recordMonth").value); const year = $("recordYear").value; const dates = sessionsSummary(sessions); const professional = selectedProfessionalName(); return `Serviço de ${service}, referente aos atendimentos realizados ao(à) paciente/beneficiário(a) ${patient?.full_name || "[nome do paciente]"}, no mês de ${monthYearText(month, year)}, nas seguintes datas: ${dates || "[datas dos atendimentos]"}, totalizando ${totalSessions} sessão(ões), com a profissional ${professional || "[nome da profissional]"}.`; }
+function clearRecordForm() { $("recordForm").reset(); $("recordId").value = ""; $("recordFormTitle").textContent = "Nova Ficha Financeira"; $("recordUpdatedLabel").textContent = ""; $("recordYear").value = currentYear(); $("recordIssueDate").value = todayISO(); $("recordStatus").value = "aguardando_pagamento"; $("recordAttendingProfessional").value = ""; resetPendingAttachments(); $("sessionsContainer").innerHTML = ""; addSessionRow(); renderGuardianOptions(); calculateRecordTotals(); }
+function recordPayloadFromForm() { const sessions = getSessions(); const totalSessions = sessions.reduce((sum, s) => sum + Number(s.quantity || 1), 0); const sessionValue = Number($("recordSessionValue").value || 0); return { patient_id: $("recordPatient").value || null, guardian_id: $("recordGuardian").value || null, team_member_id: $("recordTeamMember").value || null, reference_month: Number($("recordMonth").value), reference_year: Number($("recordYear").value), service_modality: $("recordServiceModality").value, care_location: $("recordCareLocation").value, attending_professional: selectedProfessionalName() || null, session_value: sessionValue, sessions, total_sessions: totalSessions, total_value: totalSessions * sessionValue, payment_method: $("recordPaymentMethod").value, issue_date: $("recordIssueDate").value || null, due_date: $("recordDueDate").value || null, payment_link: $("recordPaymentLink").value.trim() || null, nf_description: $("recordNfDescription").value.trim() || buildNfDescriptionFromForm(), admin_notes: $("recordAdminNotes").value.trim() || null, status: $("recordStatus").value }; }
+async function saveFinancialRecord(event) { event.preventDefault(); const id = $("recordId").value; const payload = recordPayloadFromForm(); if (!payload.patient_id) return showToast("Selecione um paciente.", "error"); if (!payload.reference_month || !payload.reference_year) return showToast("Informe mês e ano.", "error"); const button = event.submitter; setLoading(button, true); const { data, error } = id ? await sb.from("financial_records").update(payload).eq("id", id).select().single() : await sb.from("financial_records").insert(payload).select().single(); setLoading(button, false); if (error) return handleError(error, "Erro ao salvar ficha."); try { await uploadPendingAttachments(data.id); } catch (uploadError) { return handleError(uploadError, "A ficha foi salva, mas houve erro ao enviar as imagens."); } $("recordId").value = data.id; $("recordFormTitle").textContent = "Editar Ficha Financeira"; $("recordUpdatedLabel").textContent = `Salvo em ${new Date(data.updated_at || data.created_at).toLocaleString("pt-BR")}`; await Promise.all([loadFinancialRecords(), loadAttachments()]); renderEverything(); showToast("Ficha financeira salva!"); }
+function editRecord(id) { const r = state.records.find((x) => x.id === id); if (!r) return; $("recordId").value = r.id; $("recordPatient").value = r.patient_id || ""; renderGuardianOptions(r.patient_id); $("recordGuardian").value = r.guardian_id || ""; $("recordTeamMember").value = r.team_member_id || ""; $("recordMonth").value = r.reference_month || ""; $("recordYear").value = r.reference_year || currentYear(); $("recordSessionValue").value = r.session_value || ""; $("recordServiceModality").value = r.service_modality || "Psicologia"; $("recordCareLocation").value = r.care_location || "Domiciliar"; $("recordAttendingProfessional").value = r.attending_professional || ""; $("recordPaymentMethod").value = r.payment_method || "PIX"; $("recordIssueDate").value = r.issue_date || ""; $("recordDueDate").value = r.due_date || ""; $("recordPaymentLink").value = r.payment_link || ""; $("recordNfDescription").value = r.nf_description || ""; $("recordAdminNotes").value = r.admin_notes || ""; $("recordStatus").value = r.status || "aguardando_pagamento"; $("sessionsContainer").innerHTML = ""; (r.sessions || []).forEach(addSessionRow); if (!r.sessions || !r.sessions.length) addSessionRow(); $("recordFormTitle").textContent = "Editar Ficha Financeira"; $("recordUpdatedLabel").textContent = r.updated_at ? `Atualizado em ${new Date(r.updated_at).toLocaleString("pt-BR")}` : ""; resetPendingAttachments(); calculateRecordTotals(); renderAttachmentsPanel(); setScreen("financialFormScreen"); }
+async function deleteRecord(id) { if (!confirm("Tem certeza que deseja excluir este registro? Essa ação não poderá ser desfeita.")) return; const { error } = await sb.from("financial_records").update({ deleted_at: new Date().toISOString() }).eq("id", id); if (error) return handleError(error, "Erro ao excluir ficha."); await loadFinancialRecords(); renderEverything(); showToast("Ficha excluída logicamente."); }
+function renderRecordsList() { if (!$("recordsList")) return; const patientId = $("filterPatient").value; const guardianId = $("filterGuardian").value; const month = $("filterMonth").value; const year = $("filterYear").value; const search = ($("filterSearch").value || "").toLowerCase(); let items = state.records.filter((r) => { const patientName = r.patients?.full_name || state.patients.find((p) => p.id === r.patient_id)?.full_name || ""; return (!patientId || r.patient_id === patientId) && (!guardianId || r.guardian_id === guardianId) && (!month || Number(r.reference_month) === Number(month)) && (!year || Number(r.reference_year) === Number(year)) && (!search || patientName.toLowerCase().includes(search)); }); $("recordsList").innerHTML = items.length ? items.map((r) => { const patientName = r.patients?.full_name || state.patients.find((p) => p.id === r.patient_id)?.full_name || "Paciente"; const guardianName = r.guardians?.full_name || state.guardians.find((g) => g.id === r.guardian_id)?.full_name || "-"; return `<div class="item"><div><strong>${escapeHTML(patientName)}</strong><span>${monthYearText(r.reference_month, r.reference_year)} • ${escapeHTML(r.service_modality || "")} • ${escapeHTML(r.care_location || "")}</span><span>Responsável: ${escapeHTML(guardianName)} • Profissional: ${escapeHTML(r.attending_professional || "-")} • Status: ${formatStatus(r.status)}</span></div><div><strong>${money(r.total_value)}</strong><span>${r.total_sessions || 0} sessão(ões)</span></div><div class="item-actions"><button class="outline" onclick="editRecord('${r.id}')">Editar</button><button class="success" onclick="openPdfForRecord('${r.id}')">PDF</button><button class="danger" onclick="deleteRecord('${r.id}')">Excluir</button></div></div>`; }).join("") : '<div class="empty">Nenhuma ficha encontrada.</div>'; }
+function formatStatus(status) { return ({ aguardando_pagamento: "Aguardando pagamento", pago: "Pago", nf_emitida: "Nota Fiscal emitida", cancelado: "Cancelado" })[status] || status || ""; }
 
-function clearGuardianForm() {
-  $("guardianForm").reset();
-  $("guardianId").value = "";
-  $("guardianRelationship").value = "mãe";
-  Array.from($("guardianPatients").options).forEach((opt) => opt.selected = false);
-  $("guardianFormTitle").textContent = "Cadastrar responsável";
-}
+function getSettingsSafe() { return state.settings || { clinic_name: "Núcleo ÚNick", professional_name: "Nicolly Sperandio Silveira", professional_title: "Psicóloga", professional_registry: "CRP-12/21411", cnpj: "51.291.241/0001-78", phone: "(48) 9.8493-1775", email: "nicollysilveiraa@hotmail.com", bank_name: "Bradesco", bank_agency: "0341-6", bank_account: "0033301-8", bank_account_name: "Neuro Brilhar Psicologia", pix_phone: "48984931775", pix_email: "nicollysilveiraa@hotmail.com", pix_cnpj: "51.291.241/0001-78", default_notes: "Após o pagamento, envie o comprovante para emissão da Nota Fiscal." }; }
+async function buildPdfHTML(record) { const settings = getSettingsSafe(); const patient = state.patients.find((p) => p.id === record.patient_id) || record.patients || {}; const guardian = state.guardians.find((g) => g.id === record.guardian_id) || record.guardians || {}; const sessions = record.sessions || []; const attachments = recordAttachments(record.id); const rows = sessions.length ? sessions.map((s, i) => `<tr><td style="text-align:center"><strong>${i + 1}</strong></td><td><strong>${dateBR(s.date)}</strong><br>${escapeHTML([s.start_time, s.end_time].filter(Boolean).join(" às "))}<br>${s.duration ? `(${escapeHTML(s.duration)})` : ""}${Number(s.quantity || 1) > 1 ? `<br><strong>Qtd.: ${s.quantity}</strong>` : ""}</td><td>${escapeHTML(s.type || record.service_modality || "Atendimento")}</td></tr>`).join("") : '<tr><td colspan="3">Sem sessões cadastradas.</td></tr>'; let attachmentPages = ""; for (let i = 0; i < attachments.length; i++) { const attachment = attachments[i]; let src = ""; try { src = await signedUrlForAttachment(attachment); } catch (error) { console.error(error); } if (!src) continue; attachmentPages += `<section class="pdf-page pdf-attachment-page"><h2>Anexo ${i + 1}</h2><p class="muted">${escapeHTML(attachment.file_name || "Imagem anexada")}</p><div class="attachment-image-frame"><img src="${src}" crossorigin="anonymous" alt="Anexo ${i + 1}" /></div></section>`; } return `<section class="pdf-page pdf-main-page"><div class="pdf-title">${settings.logo_url ? `<img src="${escapeHTML(settings.logo_url)}" class="pdf-logo" crossorigin="anonymous" />` : ""}<h1>FICHA DE FREQUÊNCIA E FINANCEIRO</h1></div><p><strong>Clínica/Núcleo:</strong> ${escapeHTML(settings.clinic_name || "Núcleo ÚNick")}<br><strong>Profissional responsável:</strong> ${escapeHTML(settings.professional_name || "")} | ${escapeHTML(settings.professional_title || "")} | ${escapeHTML(settings.professional_registry || "")}<br><strong>Profissional que realizou o atendimento:</strong> ${escapeHTML(record.attending_professional || "")}<br><strong>CNPJ:</strong> ${escapeHTML(settings.cnpj || "")}<br><strong>Contato:</strong> ${escapeHTML(settings.phone || "")} ${settings.email ? `| ${escapeHTML(settings.email)}` : ""}<br><strong>Paciente:</strong> ${escapeHTML(patient.full_name || "")}<br><strong>Responsável:</strong> ${escapeHTML(guardian.full_name || "")}<br><strong>Período de referência:</strong> ${escapeHTML(monthYearText(record.reference_month, record.reference_year))}</p><table class="pdf-table"><thead><tr><th style="width:60px">Nº</th><th>Data, horário e duração</th><th>Tipo de atendimento</th></tr></thead><tbody>${rows}</tbody></table><table class="pdf-table"><tr><td><strong>Quantidade total de sessões</strong></td><td>${record.total_sessions || 0}</td></tr><tr><td><strong>Valor por sessão</strong></td><td>${money(record.session_value)}</td></tr><tr><td><strong>Valor total</strong></td><td><strong>${money(record.total_value)}</strong></td></tr><tr><td><strong>Forma de pagamento</strong></td><td>${escapeHTML(record.payment_method || "")}</td></tr><tr><td><strong>Data de emissão/envio</strong></td><td>${dateBR(record.issue_date)}</td></tr><tr><td><strong>Vencimento</strong></td><td>${dateBR(record.due_date)}</td></tr></table><div class="pdf-payments"><div><h3>Transferência Bancária</h3><p>Banco: ${escapeHTML(settings.bank_name || "")}<br>Agência: ${escapeHTML(settings.bank_agency || "")}<br>Conta: ${escapeHTML(settings.bank_account || "")}<br>Nome da conta: ${escapeHTML(settings.bank_account_name || "")}</p></div><div><h3>PIX</h3><p>Telefone: ${escapeHTML(settings.pix_phone || "")}<br>E-mail: ${escapeHTML(settings.pix_email || "")}<br>CNPJ: ${escapeHTML(settings.pix_cnpj || "")}</p></div></div>${record.payment_link ? `<p><strong>Link de pagamento:</strong><br><a class="pdf-link" href="${escapeHTML(record.payment_link)}">${escapeHTML(record.payment_link)}</a></p>` : ""}${record.admin_notes ? `<h3>Observações administrativas</h3><p>${nl2br(record.admin_notes)}</p>` : ""}${settings.default_notes ? `<p class="muted">${nl2br(settings.default_notes)}</p>` : ""}<div class="pdf-sign"><p>____________________________________<br>${escapeHTML(settings.professional_title || "Profissional")}<br>${escapeHTML(settings.professional_name || "")}<br>${escapeHTML(settings.professional_registry || "")}</p></div></section>${attachmentPages}`; }
+async function openPdfForRecord(id = null) { let record = id ? state.records.find((r) => r.id === id) : null; if (!record) { record = recordPayloadFromForm(); record.patient_id = $("recordPatient").value; record.guardian_id = $("recordGuardian").value; } state.activeRecordForPdf = record; if (!record.id && state.pendingAttachmentFiles.length) return showToast("Salve a ficha primeiro para enviar as imagens e gerar o PDF com anexos.", "error"); $("pdfArea").innerHTML = '<div class="empty">Gerando pré-visualização...</div>'; $("pdfModal").classList.remove("hidden"); $("pdfArea").innerHTML = await buildPdfHTML(record); }
+function downloadPdf() { const record = state.activeRecordForPdf; const patient = state.patients.find((p) => p.id === record?.patient_id)?.full_name || "ficha-financeira"; const fileName = `${patient.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${record?.reference_month || "mes"}-${record?.reference_year || "ano"}.pdf`; const headerText = "Núcleo ÚNick - Núcleo de Intervenção Comportamental e Aprendizagem"; html2pdf().set({ margin: [25, 10, 18, 10], filename: fileName, image: { type: "jpeg", quality: 0.98 }, html2canvas: { scale: 2, useCORS: true, allowTaint: true }, jsPDF: { unit: "mm", format: "a4", orientation: "portrait" }, pagebreak: { mode: ["css", "legacy"], before: ".pdf-attachment-page" } }).from($("pdfArea")).toPdf().get("pdf").then((pdf) => { const totalPages = pdf.internal.getNumberOfPages(); const pageWidth = pdf.internal.pageSize.getWidth(); const pageHeight = pdf.internal.pageSize.getHeight(); for (let i = 1; i <= totalPages; i++) { pdf.setPage(i); pdf.setFont("helvetica", "bold"); pdf.setFontSize(10); pdf.text(headerText, pageWidth / 2, 12, { align: "center" }); pdf.setDrawColor(14, 111, 163); pdf.line(10, 16, pageWidth - 10, 16); pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.text(`Página ${i} de ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: "center" }); } }).save(); }
 
-async function deleteGuardian(id) {
-  if (!confirm("Tem certeza que deseja excluir este registro? Essa ação não poderá ser desfeita.")) return;
-  const now = new Date().toISOString();
-  let { error } = await sb.from("guardians").update({ deleted_at: now }).eq("id", id);
-  if (!error) ({ error } = await sb.from("patient_guardians").update({ deleted_at: now }).eq("guardian_id", id).is("deleted_at", null));
-  if (error) return handleError(error, "Erro ao excluir responsável.");
-  await loadAllData();
-  showToast("Responsável excluído logicamente.");
-}
-
-function renderGuardiansList() {
-  const search = ($("guardianSearch").value || "").toLowerCase();
-  const items = state.guardians.filter((g) => g.full_name.toLowerCase().includes(search));
-  $("guardiansList").innerHTML = items.length ? items.map((g) => {
-    const patientIds = state.patientGuardians.filter((l) => l.guardian_id === g.id).map((l) => l.patient_id);
-    const patientNames = state.patients.filter((p) => patientIds.includes(p.id)).map((p) => p.full_name).join(", ");
-    return `
-      <div class="item">
-        <div>
-          <strong>${escapeHTML(g.full_name)}</strong>
-          <span>${escapeHTML(g.relationship || "Responsável")} ${g.phone ? `• ${escapeHTML(g.phone)}` : ""} ${g.email ? `• ${escapeHTML(g.email)}` : ""}</span>
-          <span>Paciente(s): ${escapeHTML(patientNames || "não vinculado")}</span>
-        </div>
-        <div class="item-actions">
-          <button class="outline" type="button" onclick="editGuardian('${g.id}')">Editar</button>
-          <button class="danger" type="button" onclick="deleteGuardian('${g.id}')">Excluir</button>
-        </div>
-      </div>`;
-  }).join("") : '<div class="empty">Nenhum responsável encontrado.</div>';
-}
-
-function addSessionRow(session = {}) {
-  const container = $("sessionsContainer");
-  const index = container.children.length + 1;
-  const row = document.createElement("div");
-  row.className = "session-row";
-  row.innerHTML = `
-    <div class="num">${index}</div>
-    <label>Data<input class="session-date" type="date" value="${session.date || ""}" /></label>
-    <label>Início<input class="session-start" type="time" value="${session.start_time || ""}" /></label>
-    <label>Fim<input class="session-end" type="time" value="${session.end_time || ""}" /></label>
-    <label>Duração<input class="session-duration" type="text" value="${session.duration || "50 minutos"}" /></label>
-    <label>Qtd.<input class="session-quantity" type="number" min="1" step="1" value="${session.quantity || 1}" /></label>
-    <label>Tipo/observação<input class="session-type" type="text" value="${escapeHTML(session.type || "Atendimento")}" /></label>
-    <button class="danger" type="button" title="Remover">×</button>
-  `;
-  row.querySelector("button").addEventListener("click", () => {
-    row.remove();
-    renumberSessions();
-    calculateRecordTotals();
-  });
-  row.querySelectorAll("input").forEach((input) => input.addEventListener("input", calculateRecordTotals));
-  container.appendChild(row);
-  calculateRecordTotals();
-}
-
-function renumberSessions() {
-  Array.from($("sessionsContainer").children).forEach((row, i) => row.querySelector(".num").textContent = i + 1);
-}
-
-function getSessions() {
-  return Array.from($("sessionsContainer").children).map((row) => ({
-    date: row.querySelector(".session-date").value || null,
-    start_time: row.querySelector(".session-start").value || null,
-    end_time: row.querySelector(".session-end").value || null,
-    duration: row.querySelector(".session-duration").value.trim() || null,
-    quantity: Number(row.querySelector(".session-quantity").value || 1),
-    type: row.querySelector(".session-type").value.trim() || null,
-  })).filter((s) => s.date || s.type);
-}
-
-function sessionsSummary(sessions) {
-  const map = new Map();
-  sessions.forEach((s) => {
-    if (!s.date) return;
-    map.set(s.date, (map.get(s.date) || 0) + Number(s.quantity || 1));
-  });
-  return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, qtd]) => qtd > 1 ? `${dateBR(date)} (${qtd} sessões)` : dateBR(date)).join(", ");
-}
-
-function calculateRecordTotals() {
-  const sessions = getSessions();
-  const totalSessions = sessions.reduce((sum, s) => sum + Number(s.quantity || 1), 0);
-  const sessionValue = Number($("recordSessionValue").value || 0);
-  $("totalSessionsLabel").textContent = totalSessions;
-  $("totalValueLabel").textContent = money(totalSessions * sessionValue);
-  $("datesSummaryLabel").textContent = sessionsSummary(sessions) || "-";
-}
-
-function buildNfDescriptionFromForm() {
-  const patient = state.patients.find((p) => p.id === $("recordPatient").value);
-  const settings = getSettingsSafe();
-  const sessions = getSessions();
-  const totalSessions = sessions.reduce((sum, s) => sum + Number(s.quantity || 1), 0);
-  const service = $("recordServiceModality").value;
-  const month = Number($("recordMonth").value);
-  const year = $("recordYear").value;
-  const dates = sessionsSummary(sessions);
-  const registry = settings.professional_registry ? `, ${settings.professional_registry}` : "";
-
-  return `Serviço de ${service}, referente aos atendimentos realizados ao(à) paciente/beneficiário(a) ${patient?.full_name || "[nome do paciente]"}, no mês de ${monthYearText(month, year)}, nas seguintes datas: ${dates || "[datas dos atendimentos]"}, totalizando ${totalSessions} sessão(ões), com a profissional ${settings.professional_name || "[nome da profissional]"}${registry}.`;
-}
-
-function clearRecordForm() {
-  $("recordForm").reset();
-  $("recordId").value = "";
-  $("recordFormTitle").textContent = "Nova Ficha Financeira";
-  $("recordUpdatedLabel").textContent = "";
-  $("recordYear").value = currentYear();
-  $("recordIssueDate").value = todayISO();
-  $("recordStatus").value = "aguardando_pagamento";
-  $("sessionsContainer").innerHTML = "";
-  addSessionRow();
-  renderGuardianOptions();
-  calculateRecordTotals();
-}
-
-function recordPayloadFromForm() {
-  const sessions = getSessions();
-  const totalSessions = sessions.reduce((sum, s) => sum + Number(s.quantity || 1), 0);
-  const sessionValue = Number($("recordSessionValue").value || 0);
-  return {
-    patient_id: $("recordPatient").value || null,
-    guardian_id: $("recordGuardian").value || null,
-    reference_month: Number($("recordMonth").value),
-    reference_year: Number($("recordYear").value),
-    service_modality: $("recordServiceModality").value,
-    care_location: $("recordCareLocation").value,
-    session_value: sessionValue,
-    sessions,
-    total_sessions: totalSessions,
-    total_value: totalSessions * sessionValue,
-    payment_method: $("recordPaymentMethod").value,
-    issue_date: $("recordIssueDate").value || null,
-    due_date: $("recordDueDate").value || null,
-    payment_link: $("recordPaymentLink").value.trim() || null,
-    nf_description: $("recordNfDescription").value.trim() || buildNfDescriptionFromForm(),
-    admin_notes: $("recordAdminNotes").value.trim() || null,
-    status: $("recordStatus").value,
-  };
-}
-
-async function saveFinancialRecord(event) {
-  event.preventDefault();
-  const id = $("recordId").value;
-  const payload = recordPayloadFromForm();
-  if (!payload.patient_id) return showToast("Selecione um paciente.", "error");
-  if (!payload.reference_month || !payload.reference_year) return showToast("Informe mês e ano.", "error");
-
-  const button = event.submitter;
-  setLoading(button, true);
-  const { data, error } = id
-    ? await sb.from("financial_records").update(payload).eq("id", id).select().single()
-    : await sb.from("financial_records").insert(payload).select().single();
-  setLoading(button, false);
-
-  if (error) return handleError(error, "Erro ao salvar ficha.");
-  $("recordId").value = data.id;
-  $("recordFormTitle").textContent = "Editar Ficha Financeira";
-  $("recordUpdatedLabel").textContent = `Salvo em ${new Date(data.updated_at || data.created_at).toLocaleString("pt-BR")}`;
-  await loadFinancialRecords();
-  renderEverything();
-  showToast("Ficha financeira salva!");
-}
-
-function editRecord(id) {
-  const r = state.records.find((x) => x.id === id);
-  if (!r) return;
-  $("recordId").value = r.id;
-  $("recordPatient").value = r.patient_id || "";
-  renderGuardianOptions(r.patient_id);
-  $("recordGuardian").value = r.guardian_id || "";
-  $("recordMonth").value = r.reference_month || "";
-  $("recordYear").value = r.reference_year || currentYear();
-  $("recordSessionValue").value = r.session_value || "";
-  $("recordServiceModality").value = r.service_modality || "Psicologia";
-  $("recordCareLocation").value = r.care_location || "Domiciliar";
-  $("recordPaymentMethod").value = r.payment_method || "PIX";
-  $("recordIssueDate").value = r.issue_date || "";
-  $("recordDueDate").value = r.due_date || "";
-  $("recordPaymentLink").value = r.payment_link || "";
-  $("recordNfDescription").value = r.nf_description || "";
-  $("recordAdminNotes").value = r.admin_notes || "";
-  $("recordStatus").value = r.status || "aguardando_pagamento";
-  $("sessionsContainer").innerHTML = "";
-  (r.sessions || []).forEach(addSessionRow);
-  if (!r.sessions || !r.sessions.length) addSessionRow();
-  $("recordFormTitle").textContent = "Editar Ficha Financeira";
-  $("recordUpdatedLabel").textContent = r.updated_at ? `Atualizado em ${new Date(r.updated_at).toLocaleString("pt-BR")}` : "";
-  calculateRecordTotals();
-  setScreen("financialFormScreen");
-}
-
-async function deleteRecord(id) {
-  if (!confirm("Tem certeza que deseja excluir este registro? Essa ação não poderá ser desfeita.")) return;
-  const { error } = await sb.from("financial_records").update({ deleted_at: new Date().toISOString() }).eq("id", id);
-  if (error) return handleError(error, "Erro ao excluir ficha.");
-  await loadFinancialRecords();
-  renderEverything();
-  showToast("Ficha excluída logicamente.");
-}
-
-function renderRecordsList() {
-  const patientId = $("filterPatient").value;
-  const guardianId = $("filterGuardian").value;
-  const month = $("filterMonth").value;
-  const year = $("filterYear").value;
-  const search = ($("filterSearch").value || "").toLowerCase();
-
-  let items = state.records.filter((r) => {
-    const patientName = r.patients?.full_name || state.patients.find((p) => p.id === r.patient_id)?.full_name || "";
-    return (!patientId || r.patient_id === patientId) &&
-      (!guardianId || r.guardian_id === guardianId) &&
-      (!month || Number(r.reference_month) === Number(month)) &&
-      (!year || Number(r.reference_year) === Number(year)) &&
-      (!search || patientName.toLowerCase().includes(search));
-  });
-
-  $("recordsList").innerHTML = items.length ? items.map((r) => {
-    const patientName = r.patients?.full_name || state.patients.find((p) => p.id === r.patient_id)?.full_name || "Paciente";
-    const guardianName = r.guardians?.full_name || state.guardians.find((g) => g.id === r.guardian_id)?.full_name || "-";
-    return `
-      <div class="item">
-        <div>
-          <strong>${escapeHTML(patientName)}</strong>
-          <span>${monthYearText(r.reference_month, r.reference_year)} • ${escapeHTML(r.service_modality || "")} • ${escapeHTML(r.care_location || "")}</span>
-          <span>Responsável: ${escapeHTML(guardianName)} • Status: ${formatStatus(r.status)}</span>
-        </div>
-        <div>
-          <strong>${money(r.total_value)}</strong>
-          <span>${r.total_sessions || 0} sessão(ões)</span>
-        </div>
-        <div class="item-actions">
-          <button class="outline" type="button" onclick="editRecord('${r.id}')">Editar</button>
-          <button class="success" type="button" onclick="openPdfForRecord('${r.id}')">PDF</button>
-          <button class="danger" type="button" onclick="deleteRecord('${r.id}')">Excluir</button>
-        </div>
-      </div>`;
-  }).join("") : '<div class="empty">Nenhuma ficha encontrada.</div>';
-}
-
-function formatStatus(status) {
-  const map = {
-    aguardando_pagamento: "Aguardando pagamento",
-    pago: "Pago",
-    nf_emitida: "Nota Fiscal emitida",
-    cancelado: "Cancelado",
-  };
-  return map[status] || status || "";
-}
-
-function getSettingsSafe() {
-  return state.settings || {
-    clinic_name: "Clínica ÚNick",
-    professional_name: "Nicolly Sperandio Silveira",
-    professional_title: "Psicóloga",
-    professional_registry: "CRP-12/21411",
-    cnpj: "51.291.241/0001-78",
-    phone: "(48) 9.8493-1775",
-    email: "nicollysilveiraa@hotmail.com",
-    bank_name: "Bradesco",
-    bank_agency: "0341-6",
-    bank_account: "0033301-8",
-    bank_account_name: "Neuro Brilhar Psicologia",
-    pix_phone: "48984931775",
-    pix_email: "nicollysilveiraa@hotmail.com",
-    pix_cnpj: "51.291.241/0001-78",
-    default_notes: "Após o pagamento, envie o comprovante para emissão da Nota Fiscal.",
-  };
-}
-
-function buildPdfHTML(record) {
-  const settings = getSettingsSafe();
-  const patient = state.patients.find((p) => p.id === record.patient_id) || record.patients || {};
-  const guardian = state.guardians.find((g) => g.id === record.guardian_id) || record.guardians || {};
-  const sessions = record.sessions || [];
-
-  const rows = sessions.length ? sessions.map((s, i) => `
-    <tr>
-      <td style="text-align:center"><strong>${i + 1}</strong></td>
-      <td><strong>${dateBR(s.date)}</strong><br>${escapeHTML([s.start_time, s.end_time].filter(Boolean).join(" às "))}<br>${s.duration ? `(${escapeHTML(s.duration)})` : ""}${Number(s.quantity || 1) > 1 ? `<br><strong>Qtd.: ${s.quantity}</strong>` : ""}</td>
-      <td>${escapeHTML(s.type || record.service_modality || "Atendimento")}</td>
-    </tr>`).join("") : '<tr><td colspan="3">Sem sessões cadastradas.</td></tr>';
-
-  return `
-    <div class="pdf-title">
-      ${settings.logo_url ? `<img src="${escapeHTML(settings.logo_url)}" class="pdf-logo" crossorigin="anonymous" />` : ""}
-      <h1>FICHA DE FREQUÊNCIA E FINANCEIRO</h1>
-    </div>
-
-    <p><strong>Clínica:</strong> ${escapeHTML(settings.clinic_name || "")}<br>
-    <strong>Profissional:</strong> ${escapeHTML(settings.professional_name || "")} | ${escapeHTML(settings.professional_title || "")} | ${escapeHTML(settings.professional_registry || "")}<br>
-    <strong>CNPJ:</strong> ${escapeHTML(settings.cnpj || "")}<br>
-    <strong>Contato:</strong> ${escapeHTML(settings.phone || "")} ${settings.email ? `| ${escapeHTML(settings.email)}` : ""}<br>
-    <strong>Paciente:</strong> ${escapeHTML(patient.full_name || "")}<br>
-    <strong>Responsável:</strong> ${escapeHTML(guardian.full_name || "")}<br>
-    <strong>Período de referência:</strong> ${escapeHTML(monthYearText(record.reference_month, record.reference_year))}</p>
-
-    <table class="pdf-table">
-      <thead><tr><th style="width:60px">Nº</th><th>Data, horário e duração</th><th>Tipo de atendimento</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-
-    <table class="pdf-table">
-      <tr><td><strong>Quantidade total de sessões</strong></td><td>${record.total_sessions || 0}</td></tr>
-      <tr><td><strong>Valor por sessão</strong></td><td>${money(record.session_value)}</td></tr>
-      <tr><td><strong>Valor total</strong></td><td><strong>${money(record.total_value)}</strong></td></tr>
-      <tr><td><strong>Forma de pagamento</strong></td><td>${escapeHTML(record.payment_method || "")}</td></tr>
-      <tr><td><strong>Data de emissão/envio</strong></td><td>${dateBR(record.issue_date)}</td></tr>
-      <tr><td><strong>Vencimento</strong></td><td>${dateBR(record.due_date)}</td></tr>
-    </table>
-
-    <div class="pdf-payments">
-      <div>
-        <h3>Transferência Bancária</h3>
-        <p>Banco: ${escapeHTML(settings.bank_name || "")}<br>
-        Agência: ${escapeHTML(settings.bank_agency || "")}<br>
-        Conta: ${escapeHTML(settings.bank_account || "")}<br>
-        Nome da conta: ${escapeHTML(settings.bank_account_name || "")}</p>
-      </div>
-      <div>
-        <h3>PIX</h3>
-        <p>Telefone: ${escapeHTML(settings.pix_phone || "")}<br>
-        E-mail: ${escapeHTML(settings.pix_email || "")}<br>
-        CNPJ: ${escapeHTML(settings.pix_cnpj || "")}</p>
-      </div>
-    </div>
-
-    ${record.payment_link ? `<p><strong>Link de pagamento:</strong><br><a class="pdf-link" href="${escapeHTML(record.payment_link)}">${escapeHTML(record.payment_link)}</a></p>` : ""}
-
-    <h3>Descrição da Nota Fiscal</h3>
-    <p>${nl2br(record.nf_description || "")}</p>
-
-    ${record.admin_notes ? `<h3>Observações administrativas</h3><p>${nl2br(record.admin_notes)}</p>` : ""}
-    ${settings.default_notes ? `<p class="muted">${nl2br(settings.default_notes)}</p>` : ""}
-
-    <div class="pdf-sign">
-      <p>____________________________________<br>
-      ${escapeHTML(settings.professional_title || "Profissional")}<br>
-      ${escapeHTML(settings.professional_name || "")}<br>
-      ${escapeHTML(settings.professional_registry || "")}</p>
-    </div>
-  `;
-}
-
-function openPdfForRecord(id = null) {
-  let record = id ? state.records.find((r) => r.id === id) : null;
-  if (!record) {
-    record = recordPayloadFromForm();
-    record.patient_id = $("recordPatient").value;
-    record.guardian_id = $("recordGuardian").value;
-  }
-  state.activeRecordForPdf = record;
-  $("pdfArea").innerHTML = buildPdfHTML(record);
-  $("pdfModal").classList.remove("hidden");
-}
-
-function downloadPdf() {
-  const record = state.activeRecordForPdf;
-  const patient = state.patients.find((p) => p.id === record?.patient_id)?.full_name || "ficha-financeira";
-  const fileName = `${patient.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${record?.reference_month || "mes"}-${record?.reference_year || "ano"}.pdf`;
-  html2pdf().set({
-    margin: [10, 10, 10, 10],
-    filename: fileName,
-    image: { type: "jpeg", quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true },
-    jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-  }).from($("pdfArea")).save();
-}
-
-function renderSettingsForm() {
-  const s = getSettingsSafe();
-  const map = {
-    settingClinicName: "clinic_name",
-    settingProfessionalName: "professional_name",
-    settingProfessionalTitle: "professional_title",
-    settingProfessionalRegistry: "professional_registry",
-    settingCnpj: "cnpj",
-    settingPhone: "phone",
-    settingEmail: "email",
-    settingAddress: "address",
-    settingBankName: "bank_name",
-    settingBankAgency: "bank_agency",
-    settingBankAccount: "bank_account",
-    settingBankAccountName: "bank_account_name",
-    settingPixPhone: "pix_phone",
-    settingPixEmail: "pix_email",
-    settingPixCnpj: "pix_cnpj",
-    settingDefaultNfText: "default_nf_text",
-    settingDefaultNotes: "default_notes",
-    settingLogoUrl: "logo_url",
-  };
-  Object.entries(map).forEach(([input, key]) => { if ($(input)) $(input).value = s[key] || ""; });
-}
-
-async function saveSettings(event) {
-  event.preventDefault();
-  const payload = {
-    clinic_name: $("settingClinicName").value.trim() || null,
-    professional_name: $("settingProfessionalName").value.trim() || null,
-    professional_title: $("settingProfessionalTitle").value.trim() || null,
-    professional_registry: $("settingProfessionalRegistry").value.trim() || null,
-    cnpj: $("settingCnpj").value.trim() || null,
-    phone: $("settingPhone").value.trim() || null,
-    email: $("settingEmail").value.trim() || null,
-    address: $("settingAddress").value.trim() || null,
-    bank_name: $("settingBankName").value.trim() || null,
-    bank_agency: $("settingBankAgency").value.trim() || null,
-    bank_account: $("settingBankAccount").value.trim() || null,
-    bank_account_name: $("settingBankAccountName").value.trim() || null,
-    pix_phone: $("settingPixPhone").value.trim() || null,
-    pix_email: $("settingPixEmail").value.trim() || null,
-    pix_cnpj: $("settingPixCnpj").value.trim() || null,
-    default_nf_text: $("settingDefaultNfText").value.trim() || null,
-    default_notes: $("settingDefaultNotes").value.trim() || null,
-    logo_url: $("settingLogoUrl").value.trim() || null,
-  };
-
-  const button = event.submitter;
-  setLoading(button, true);
-  const { error } = await sb.from("clinic_settings").upsert(payload, { onConflict: "user_id" });
-  setLoading(button, false);
-  if (error) return handleError(error, "Erro ao salvar configurações.");
-  await loadSettings();
-  showToast("Configurações salvas!");
-}
+function renderSettingsForm() { const s = getSettingsSafe(); const map = { settingClinicName:"clinic_name", settingProfessionalName:"professional_name", settingProfessionalTitle:"professional_title", settingProfessionalRegistry:"professional_registry", settingCnpj:"cnpj", settingPhone:"phone", settingEmail:"email", settingAddress:"address", settingBankName:"bank_name", settingBankAgency:"bank_agency", settingBankAccount:"bank_account", settingBankAccountName:"bank_account_name", settingPixPhone:"pix_phone", settingPixEmail:"pix_email", settingPixCnpj:"pix_cnpj", settingDefaultNfText:"default_nf_text", settingDefaultNotes:"default_notes", settingLogoUrl:"logo_url" }; Object.entries(map).forEach(([input, key]) => { if ($(input)) $(input).value = s[key] || ""; }); }
+async function saveSettings(event) { event.preventDefault(); const payload = { clinic_name: $("settingClinicName").value.trim() || null, professional_name: $("settingProfessionalName").value.trim() || null, professional_title: $("settingProfessionalTitle").value.trim() || null, professional_registry: $("settingProfessionalRegistry").value.trim() || null, cnpj: $("settingCnpj").value.trim() || null, phone: $("settingPhone").value.trim() || null, email: $("settingEmail").value.trim() || null, address: $("settingAddress").value.trim() || null, bank_name: $("settingBankName").value.trim() || null, bank_agency: $("settingBankAgency").value.trim() || null, bank_account: $("settingBankAccount").value.trim() || null, bank_account_name: $("settingBankAccountName").value.trim() || null, pix_phone: $("settingPixPhone").value.trim() || null, pix_email: $("settingPixEmail").value.trim() || null, pix_cnpj: $("settingPixCnpj").value.trim() || null, default_nf_text: $("settingDefaultNfText").value.trim() || null, default_notes: $("settingDefaultNotes").value.trim() || null, logo_url: $("settingLogoUrl").value.trim() || null }; const button = event.submitter; setLoading(button, true); const { error } = await sb.from("clinic_settings").upsert(payload, { onConflict: "user_id" }); setLoading(button, false); if (error) return handleError(error, "Erro ao salvar configurações."); await loadSettings(); showToast("Configurações salvas!"); }
 
 function attachEvents() {
-  $("loginTabBtn").addEventListener("click", () => {
-    $("loginTabBtn").classList.add("active");
-    $("signupTabBtn").classList.remove("active");
-    $("loginForm").classList.remove("hidden");
-    $("signupForm").classList.add("hidden");
-  });
-  $("signupTabBtn").addEventListener("click", () => {
-    $("signupTabBtn").classList.add("active");
-    $("loginTabBtn").classList.remove("active");
-    $("signupForm").classList.remove("hidden");
-    $("loginForm").classList.add("hidden");
-  });
-  $("loginForm").addEventListener("submit", signIn);
-  $("signupForm").addEventListener("submit", signUp);
-  $("logoutBtn").addEventListener("click", signOut);
-  document.querySelectorAll(".menu-btn").forEach((btn) => btn.addEventListener("click", () => setScreen(btn.dataset.screen)));
-
-  $("patientForm").addEventListener("submit", savePatient);
-  $("clearPatientBtn").addEventListener("click", clearPatientForm);
-  $("patientSearch").addEventListener("input", renderPatientsList);
-
-  $("guardianForm").addEventListener("submit", saveGuardian);
-  $("clearGuardianBtn").addEventListener("click", clearGuardianForm);
-  $("guardianSearch").addEventListener("input", renderGuardiansList);
-
-  $("recordForm").addEventListener("submit", saveFinancialRecord);
-  $("newRecordBtn").addEventListener("click", clearRecordForm);
-  $("addSessionBtn").addEventListener("click", () => addSessionRow());
-  $("recordSessionValue").addEventListener("input", calculateRecordTotals);
-  $("recordPatient").addEventListener("change", () => renderGuardianOptions($("recordPatient").value));
-  $("generateNfDescriptionBtn").addEventListener("click", () => { $("recordNfDescription").value = buildNfDescriptionFromForm(); showToast("Descrição gerada!"); });
-  $("copyNfDescriptionBtn").addEventListener("click", async () => { await navigator.clipboard.writeText($("recordNfDescription").value); showToast("Descrição copiada!"); });
-  $("previewPdfBtn").addEventListener("click", () => openPdfForRecord());
-
-  ["filterPatient", "filterGuardian", "filterMonth", "filterYear", "filterSearch"].forEach((id) => $(id).addEventListener("input", renderRecordsList));
-  $("refreshRecordsBtn").addEventListener("click", async () => { await loadFinancialRecords(); renderRecordsList(); showToast("Lista atualizada!"); });
-
-  $("settingsForm").addEventListener("submit", saveSettings);
-  $("closePdfModalBtn").addEventListener("click", () => $("pdfModal").classList.add("hidden"));
-  $("downloadPdfBtn").addEventListener("click", downloadPdf);
+  $("loginTabBtn").addEventListener("click", () => { $("loginTabBtn").classList.add("active"); $("signupTabBtn").classList.remove("active"); $("loginForm").classList.remove("hidden"); $("signupForm").classList.add("hidden"); });
+  $("signupTabBtn").addEventListener("click", () => { $("signupTabBtn").classList.add("active"); $("loginTabBtn").classList.remove("active"); $("signupForm").classList.remove("hidden"); $("loginForm").classList.add("hidden"); });
+  $("loginForm").addEventListener("submit", signIn); $("signupForm").addEventListener("submit", signUp); $("logoutBtn").addEventListener("click", signOut); document.querySelectorAll(".menu-btn").forEach((btn) => btn.addEventListener("click", () => setScreen(btn.dataset.screen)));
+  $("newPatientBtn").addEventListener("click", () => { clearPatientForm(); showPatientForm(); }); $("closePatientFormBtn").addEventListener("click", () => $("patientForm").classList.add("hidden")); $("patientForm").addEventListener("submit", savePatient); $("clearPatientBtn").addEventListener("click", clearPatientForm); $("patientSearch").addEventListener("input", renderPatientsList); $("patientStatusFilter").addEventListener("change", renderPatientsList); $("patientDocumentInput").addEventListener("change", (e) => handleGenericDocumentSelection("patient", e));
+  $("newTeamBtn").addEventListener("click", () => { clearTeamForm(); showTeamForm(); }); $("closeTeamFormBtn").addEventListener("click", () => $("teamForm").classList.add("hidden")); $("teamForm").addEventListener("submit", saveTeamMember); $("clearTeamBtn").addEventListener("click", clearTeamForm); $("teamSearch").addEventListener("input", renderTeamList); $("teamStatusFilter").addEventListener("change", renderTeamList); $("teamDocumentInput").addEventListener("change", (e) => handleGenericDocumentSelection("team", e));
+  $("guardianForm").addEventListener("submit", saveGuardian); $("clearGuardianBtn").addEventListener("click", clearGuardianForm); $("guardianSearch").addEventListener("input", renderGuardiansList);
+  $("recordForm").addEventListener("submit", saveFinancialRecord); $("newRecordBtn").addEventListener("click", clearRecordForm); $("addSessionBtn").addEventListener("click", () => addSessionRow()); $("recordSessionValue").addEventListener("input", calculateRecordTotals); $("recordPatient").addEventListener("change", () => renderGuardianOptions($("recordPatient").value)); $("recordTeamMember").addEventListener("change", () => { const t = state.teamMembers.find((x) => x.id === $("recordTeamMember").value); if (t && !$("recordAttendingProfessional").value) $("recordAttendingProfessional").value = t.full_name; }); $("generateNfDescriptionBtn").addEventListener("click", () => { $("recordNfDescription").value = buildNfDescriptionFromForm(); showToast("Descrição gerada!"); }); $("copyNfDescriptionBtn").addEventListener("click", async () => { await navigator.clipboard.writeText($("recordNfDescription").value); showToast("Descrição copiada!"); }); $("previewPdfBtn").addEventListener("click", () => openPdfForRecord()); $("recordAttachmentInput").addEventListener("change", handleAttachmentSelection);
+  ["filterPatient", "filterGuardian", "filterMonth", "filterYear", "filterSearch"].forEach((id) => $(id).addEventListener("input", renderRecordsList)); $("refreshRecordsBtn").addEventListener("click", async () => { await loadFinancialRecords(); renderRecordsList(); showToast("Lista atualizada!"); });
+  $("settingsForm").addEventListener("submit", saveSettings); $("closePdfModalBtn").addEventListener("click", () => $("pdfModal").classList.add("hidden")); $("downloadPdfBtn").addEventListener("click", downloadPdf); $("closeViewModalBtn").addEventListener("click", () => $("viewModal").classList.add("hidden"));
 }
 
-window.editPatient = editPatient;
-window.deletePatient = deletePatient;
-window.editGuardian = editGuardian;
-window.deleteGuardian = deleteGuardian;
-window.editRecord = editRecord;
-window.deleteRecord = deleteRecord;
-window.openPdfForRecord = openPdfForRecord;
+Object.assign(window, { editPatient, deletePatient, archivePatient, viewPatient, editTeamMember, deleteTeamMember, archiveTeamMember, viewTeamMember, editGuardian, deleteGuardian, editRecord, deleteRecord, openPdfForRecord, removePendingAttachment, removeSavedAttachment, removePendingGenericDocument, removeGenericDocument, openDocument });
 
-(function init() {
-  attachEvents();
-  initStaticSelects();
-  addSessionRow();
-  clearPatientForm();
-  clearGuardianForm();
-  if (!CONFIG_OK) $("configAlert").classList.remove("hidden");
-  checkSession();
-})();
+(function init() { attachEvents(); initStaticSelects(); addSessionRow(); clearPatientForm(); clearTeamForm(); clearGuardianForm(); if (!CONFIG_OK) $("configAlert").classList.remove("hidden"); checkSession(); })();
