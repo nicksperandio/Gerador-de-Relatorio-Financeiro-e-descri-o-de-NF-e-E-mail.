@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clínica ÚNick | Sistema Financeiro</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+  <div id="toast" class="toast"></div>
+
+  <main id="authView" class="auth-page">
+    <section class="auth-card">
+      <div class="brand-badge">ÚNick</div>
+      <h1>Sistema Financeiro e Nota Fiscal</h1>
+      <p>Faça login para acessar pacientes, responsáveis, fichas financeiras e geração de PDF.</p>
+
+      <div id="configAlert" class="alert warning hidden">
+        Configure a URL e a chave pública do Supabase no arquivo <strong>assets/app.js</strong> antes de usar o login.
+      </div>
+
+      <div class="auth-tabs">
+        <button id="loginTabBtn" class="active" type="button">Entrar</button>
+        <button id="signupTabBtn" type="button">Criar cadastro</button>
+      </div>
+
+      <form id="loginForm" class="auth-form">
+        <label>E-mail
+          <input id="loginEmail" type="email" autocomplete="email" required placeholder="seuemail@exemplo.com" />
+        </label>
+        <label>Senha
+          <input id="loginPassword" type="password" autocomplete="current-password" required placeholder="Sua senha" />
+        </label>
+        <button class="primary full" type="submit">Entrar</button>
+      </form>
+
+      <form id="signupForm" class="auth-form hidden">
+        <label>Nome
+          <input id="signupName" type="text" autocomplete="name" placeholder="Seu nome" />
+        </label>
+        <label>E-mail
+          <input id="signupEmail" type="email" autocomplete="email" required placeholder="seuemail@exemplo.com" />
+        </label>
+        <label>Senha
+          <input id="signupPassword" type="password" autocomplete="new-password" minlength="6" required placeholder="Mínimo 6 caracteres" />
+        </label>
+        <button class="primary full" type="submit">Criar cadastro</button>
+      </form>
+
+      <p class="small">Use somente em ambiente com Supabase configurado, autenticação ativa e Row Level Security habilitado.</p>
+    </section>
+  </main>
+
+  <main id="appView" class="app hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <span>Clínica ÚNick</span>
+        <small>Financeiro + NF</small>
+      </div>
+      <nav class="menu">
+        <button class="menu-btn active" data-screen="dashboardScreen">Início</button>
+        <button class="menu-btn" data-screen="patientsScreen">Pacientes</button>
+        <button class="menu-btn" data-screen="guardiansScreen">Responsáveis</button>
+        <button class="menu-btn" data-screen="financialFormScreen">Nova Ficha</button>
+        <button class="menu-btn" data-screen="recordsScreen">Fichas Salvas</button>
+        <button class="menu-btn" data-screen="settingsScreen">Configurações</button>
+      </nav>
+    </aside>
+
+    <section class="content">
+      <header class="topbar">
+        <div>
+          <h1 id="screenTitle">Início</h1>
+          <p id="screenSubtitle">Resumo do sistema financeiro.</p>
+        </div>
+        <div class="user-area">
+          <span id="userEmail"></span>
+          <button id="logoutBtn" class="ghost" type="button">Sair</button>
+        </div>
+      </header>
+
+      <section id="dashboardScreen" class="screen active">
+        <div class="cards-grid">
+          <article class="metric-card">
+            <strong id="metricPatients">0</strong>
+            <span>Pacientes ativos</span>
+          </article>
+          <article class="metric-card">
+            <strong id="metricGuardians">0</strong>
+            <span>Responsáveis</span>
+          </article>
+          <article class="metric-card">
+            <strong id="metricRecords">0</strong>
+            <span>Fichas financeiras</span>
+          </article>
+          <article class="metric-card">
+            <strong id="metricMonthTotal">R$ 0,00</strong>
+            <span>Total em aberto/pago</span>
+          </article>
+        </div>
+
+        <div class="card">
+          <h2>Fluxo recomendado</h2>
+          <ol class="flow-list">
+            <li>Cadastre ou atualize o paciente.</li>
+            <li>Cadastre o responsável financeiro/legal e vincule ao paciente.</li>
+            <li>Crie a ficha financeira do mês.</li>
+            <li>Gere o PDF da ficha e envie para a família.</li>
+            <li>Após pagamento, gere a descrição da Nota Fiscal e o e-mail da NF.</li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="patientsScreen" class="screen">
+        <div class="split-grid">
+          <form id="patientForm" class="card form-card">
+            <h2 id="patientFormTitle">Cadastrar paciente</h2>
+            <input id="patientId" type="hidden" />
+            <label>Nome completo do paciente
+              <input id="patientName" type="text" required />
+            </label>
+            <label>Data de nascimento
+              <input id="patientBirthDate" type="date" />
+            </label>
+            <label>Status
+              <select id="patientStatus">
+                <option value="ativo">Ativo</option>
+                <option value="inativo">Inativo</option>
+              </select>
+            </label>
+            <label>Observações administrativas
+              <textarea id="patientNotes" rows="4" placeholder="Observações não clínicas, quando necessário."></textarea>
+            </label>
+            <div class="actions">
+              <button class="primary" type="submit">Salvar paciente</button>
+              <button id="clearPatientBtn" class="ghost" type="button">Limpar</button>
+            </div>
+          </form>
+
+          <div class="card">
+            <div class="section-head">
+              <h2>Pacientes cadastrados</h2>
+              <input id="patientSearch" type="search" placeholder="Pesquisar pelo nome..." />
+            </div>
+            <div id="patientsList" class="list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="guardiansScreen" class="screen">
+        <div class="split-grid">
+          <form id="guardianForm" class="card form-card">
+            <h2 id="guardianFormTitle">Cadastrar responsável</h2>
+            <input id="guardianId" type="hidden" />
+            <label>Nome completo
+              <input id="guardianName" type="text" required />
+            </label>
+            <label>CPF
+              <input id="guardianCpf" type="text" placeholder="Opcional" />
+            </label>
+            <label>E-mail
+              <input id="guardianEmail" type="email" />
+            </label>
+            <label>Telefone/WhatsApp
+              <input id="guardianPhone" type="tel" />
+            </label>
+            <label>Endereço
+              <textarea id="guardianAddress" rows="3"></textarea>
+            </label>
+            <label>Vínculo
+              <select id="guardianRelationship">
+                <option value="mãe">Mãe</option>
+                <option value="pai">Pai</option>
+                <option value="responsável legal">Responsável legal</option>
+                <option value="outro">Outro</option>
+              </select>
+            </label>
+            <label>Paciente(s) vinculado(s)
+              <select id="guardianPatients" multiple size="5"></select>
+            </label>
+            <div class="actions">
+              <button class="primary" type="submit">Salvar responsável</button>
+              <button id="clearGuardianBtn" class="ghost" type="button">Limpar</button>
+            </div>
+          </form>
+
+          <div class="card">
+            <div class="section-head">
+              <h2>Responsáveis cadastrados</h2>
+              <input id="guardianSearch" type="search" placeholder="Pesquisar pelo nome..." />
+            </div>
+            <div id="guardiansList" class="list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="financialFormScreen" class="screen">
+        <form id="recordForm" class="card form-card wide">
+          <div class="section-head">
+            <h2 id="recordFormTitle">Nova Ficha Financeira</h2>
+            <span id="recordUpdatedLabel" class="small"></span>
+          </div>
+          <input id="recordId" type="hidden" />
+
+          <div class="grid-3">
+            <label>Paciente
+              <select id="recordPatient" required></select>
+            </label>
+            <label>Responsável
+              <select id="recordGuardian"></select>
+            </label>
+            <label>Status da ficha
+              <select id="recordStatus">
+                <option value="aguardando_pagamento">Aguardando pagamento</option>
+                <option value="pago">Pago</option>
+                <option value="nf_emitida">Nota Fiscal emitida</option>
+                <option value="cancelado">Cancelado</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="grid-3">
+            <label>Mês de referência
+              <select id="recordMonth" required></select>
+            </label>
+            <label>Ano
+              <input id="recordYear" type="number" min="2020" max="2100" required />
+            </label>
+            <label>Valor por sessão
+              <input id="recordSessionValue" type="number" min="0" step="0.01" required />
+            </label>
+          </div>
+
+          <div class="grid-3">
+            <label>Modalidade do atendimento
+              <select id="recordServiceModality">
+                <option>Psicologia</option>
+                <option>ABA</option>
+                <option>Supervisão</option>
+                <option>Orientação parental</option>
+                <option>Reunião</option>
+                <option>Outro</option>
+              </select>
+            </label>
+            <label>Local/modalidade
+              <select id="recordCareLocation">
+                <option>Domiciliar</option>
+                <option>Clínica</option>
+                <option>Online</option>
+                <option>Escolar</option>
+                <option>Outro</option>
+              </select>
+            </label>
+            <label>Forma de pagamento
+              <select id="recordPaymentMethod">
+                <option>PIX</option>
+                <option>Transferência</option>
+                <option>Cartão</option>
+                <option>Dinheiro</option>
+                <option>Outro</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="grid-3">
+            <label>Data de emissão/envio
+              <input id="recordIssueDate" type="date" />
+            </label>
+            <label>Vencimento
+              <input id="recordDueDate" type="date" />
+            </label>
+            <label>Link de pagamento
+              <input id="recordPaymentLink" type="url" placeholder="https://..." />
+            </label>
+          </div>
+
+          <div class="sessions-head">
+            <h3>Datas das sessões</h3>
+            <button id="addSessionBtn" class="secondary" type="button">+ Adicionar sessão</button>
+          </div>
+          <div id="sessionsContainer" class="sessions-container"></div>
+
+          <div class="summary-line">
+            <span>Total de sessões: <strong id="totalSessionsLabel">0</strong></span>
+            <span>Valor total: <strong id="totalValueLabel">R$ 0,00</strong></span>
+            <span>Resumo das datas: <strong id="datesSummaryLabel">-</strong></span>
+          </div>
+
+          <label>Descrição da Nota Fiscal
+            <textarea id="recordNfDescription" rows="4"></textarea>
+          </label>
+          <div class="actions compact">
+            <button id="generateNfDescriptionBtn" class="outline" type="button">Gerar descrição da NF</button>
+            <button id="copyNfDescriptionBtn" class="ghost" type="button">Copiar descrição</button>
+          </div>
+
+          <label>Observações administrativas
+            <textarea id="recordAdminNotes" rows="4"></textarea>
+          </label>
+
+          <div class="actions">
+            <button class="primary" type="submit">Salvar ficha</button>
+            <button id="newRecordBtn" class="ghost" type="button">Nova ficha</button>
+            <button id="previewPdfBtn" class="success" type="button">Gerar PDF</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="recordsScreen" class="screen">
+        <div class="card">
+          <div class="section-head">
+            <h2>Fichas financeiras salvas</h2>
+            <button id="refreshRecordsBtn" class="ghost" type="button">Atualizar</button>
+          </div>
+          <div class="filters grid-4">
+            <label>Paciente
+              <select id="filterPatient"></select>
+            </label>
+            <label>Responsável
+              <select id="filterGuardian"></select>
+            </label>
+            <label>Mês
+              <select id="filterMonth"></select>
+            </label>
+            <label>Ano
+              <input id="filterYear" type="number" placeholder="2026" />
+            </label>
+            <label class="span-2">Pesquisar por nome do paciente
+              <input id="filterSearch" type="search" placeholder="Digite o nome..." />
+            </label>
+          </div>
+          <div id="recordsList" class="list table-list"></div>
+        </div>
+      </section>
+
+      <section id="settingsScreen" class="screen">
+        <form id="settingsForm" class="card form-card wide">
+          <h2>Configurações da Clínica</h2>
+          <div class="grid-3">
+            <label>Nome da clínica
+              <input id="settingClinicName" type="text" />
+            </label>
+            <label>Nome da profissional
+              <input id="settingProfessionalName" type="text" />
+            </label>
+            <label>Área/título profissional
+              <input id="settingProfessionalTitle" type="text" placeholder="Psicóloga" />
+            </label>
+            <label>CRP/Registro
+              <input id="settingProfessionalRegistry" type="text" />
+            </label>
+            <label>CNPJ
+              <input id="settingCnpj" type="text" />
+            </label>
+            <label>Telefone
+              <input id="settingPhone" type="text" />
+            </label>
+            <label>E-mail
+              <input id="settingEmail" type="email" />
+            </label>
+            <label class="span-2">Endereço
+              <input id="settingAddress" type="text" />
+            </label>
+            <label>Banco
+              <input id="settingBankName" type="text" />
+            </label>
+            <label>Agência
+              <input id="settingBankAgency" type="text" />
+            </label>
+            <label>Conta
+              <input id="settingBankAccount" type="text" />
+            </label>
+            <label>Nome da conta
+              <input id="settingBankAccountName" type="text" />
+            </label>
+            <label>PIX telefone
+              <input id="settingPixPhone" type="text" />
+            </label>
+            <label>PIX e-mail
+              <input id="settingPixEmail" type="email" />
+            </label>
+            <label>PIX CNPJ
+              <input id="settingPixCnpj" type="text" />
+            </label>
+            <label class="span-2">URL da logo da clínica
+              <input id="settingLogoUrl" type="url" placeholder="https://..." />
+            </label>
+          </div>
+          <label>Texto padrão para Nota Fiscal
+            <textarea id="settingDefaultNfText" rows="4"></textarea>
+          </label>
+          <label>Observações padrão
+            <textarea id="settingDefaultNotes" rows="4"></textarea>
+          </label>
+          <div class="actions">
+            <button class="primary" type="submit">Salvar configurações</button>
+          </div>
+        </form>
+      </section>
+    </section>
+  </main>
+
+  <div id="pdfModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-head">
+        <h2>Pré-visualização do PDF</h2>
+        <button id="closePdfModalBtn" class="ghost" type="button">Fechar</button>
+      </div>
+      <div id="pdfArea" class="pdf-area"></div>
+      <div class="actions">
+        <button id="downloadPdfBtn" class="primary" type="button">Baixar PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>
