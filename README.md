@@ -1,165 +1,52 @@
-# Clínica ÚNick — Sistema Financeiro e Nota Fiscal
+# Núcleo ÚNick — Sistema Financeiro e Gestão v3
 
-Sistema online simples, profissional e funcional para GitHub Pages + Supabase.
+Versão com GitHub Pages + Supabase Auth + Database + Storage.
 
-## Funcionalidades da versão inicial
+## O que entrou na v3
 
-- Login com e-mail e senha via Supabase Auth.
-- Bloqueio das telas internas quando não há usuário logado.
-- Cadastro, listagem, edição, pesquisa e exclusão lógica de pacientes.
-- Cadastro, listagem, edição, pesquisa e exclusão lógica de responsáveis.
-- Vínculo de um ou mais responsáveis ao paciente.
-- Nova ficha financeira mensal.
-- Cálculo automático de total de sessões, valor total e resumo das datas.
-- Descrição automática da Nota Fiscal.
-- Lista de fichas salvas com filtros.
-- Edição de ficha já salva.
-- Exclusão lógica de ficha financeira usando `deleted_at`.
-- Configurações da clínica/profissional.
-- Geração de PDF da ficha financeira.
+- Aba **Pacientes** com lista em colunas: idade, sexo, cidade, convênio e histórico.
+- Botão **+ Novo Paciente**.
+- Cadastro completo de paciente com documentos/anexos.
+- Botões **Ver**, **Editar**, **Arquivar** e **Excluir**.
+- Arquivamento de paciente com motivo: alta, transferência, desligamento ou outro.
+- Aba **Equipe** com lista de profissionais.
+- Botão **+ Cadastrar novo membro**.
+- Cadastro completo de profissionais, dados de pagamento, PJ/CNPJ e anexos.
+- Botões **Ver**, **Editar**, **Arquivar** e **Excluir** para equipe.
+- Nova ficha financeira com seleção de profissional da equipe e campo manual do profissional que atendeu.
+- PDF A4 com cabeçalho e numeração de páginas.
+- A descrição da Nota Fiscal continua no sistema, mas **não entra no PDF**.
+- Anexos da ficha financeira continuam entrando no PDF, cada imagem em uma página separada.
 
-## Arquivos
+## Arquivos principais
 
 ```text
 index.html
-assets/
-  styles.css
-  app.js
+assets/app.js
+assets/styles.css
 supabase.sql
-README.md
+migracao_v2_anexos.sql
+migracao_v3_pacientes_equipe.sql
 ```
 
-## 1. Criar projeto no Supabase
+## Atualizando quem já instalou a v2
 
-1. Acesse o Supabase.
-2. Crie um novo projeto.
-3. Vá em **SQL Editor**.
-4. Cole todo o conteúdo do arquivo `supabase.sql`.
-5. Clique em **Run**.
-
-Isso criará as tabelas:
-
-- `profiles`
-- `patients`
-- `guardians`
-- `patient_guardians`
-- `financial_records`
-- `clinic_settings`
-
-Também serão criadas as políticas de segurança com Row Level Security.
-
-## 2. Configurar autenticação
-
-No Supabase:
-
-1. Vá em **Authentication > Providers**.
-2. Ative **Email**.
-3. Decida se deseja exigir confirmação por e-mail.
-4. Em **Authentication > URL Configuration**, configure:
-   - **Site URL:** URL do seu GitHub Pages.
-   - **Redirect URLs:** a mesma URL do GitHub Pages.
-
-Exemplo:
-
-```text
-https://seuusuario.github.io/seu-repositorio/
-```
-
-## 3. Pegar URL e chave pública do Supabase
-
-No Supabase:
-
-1. Vá em **Project Settings > API** ou **Connect**.
-2. Copie a **Project URL**.
-3. Copie a chave pública/publishable key ou a chave anon pública.
-4. Abra `assets/app.js`.
-5. Substitua:
-
-```js
-const SUPABASE_URL = "COLE_AQUI_A_URL_DO_SUPABASE";
-const SUPABASE_PUBLIC_KEY = "COLE_AQUI_A_CHAVE_PUBLICA_DO_SUPABASE";
-```
-
-por:
-
-```js
-const SUPABASE_URL = "https://SEU-PROJETO.supabase.co";
-const SUPABASE_PUBLIC_KEY = "SUA_CHAVE_PUBLICA_AQUI";
-```
-
-Nunca coloque `service_role`, `secret key` ou senha de banco no front-end.
-
-## 4. Publicar no GitHub Pages
-
-1. Entre no repositório do seu projeto atual no GitHub.
-2. Faça backup dos arquivos antigos.
-3. Envie estes arquivos para o repositório:
+1. Entre no Supabase.
+2. Vá em **SQL Editor**.
+3. Clique em **New query**.
+4. Copie todo o conteúdo de `migracao_v3_pacientes_equipe.sql`.
+5. Cole no Supabase e clique em **Run**.
+6. No GitHub, substitua:
    - `index.html`
-   - pasta `assets`
-   - `README.md`
-   - opcionalmente `supabase.sql`, ou mantenha esse arquivo privado se preferir.
-4. Vá em **Settings > Pages**.
-5. Em **Build and deployment**, selecione:
-   - Source: `Deploy from a branch`
-   - Branch: `main`
-   - Folder: `/root`
-6. Salve.
-7. Aguarde o GitHub gerar a URL.
+   - `assets/app.js`
+   - `assets/styles.css`
+7. Adicione também o arquivo `migracao_v3_pacientes_equipe.sql` ao repositório.
 
-## 5. Como testar
+## Instalação do zero
 
-### Teste de login
+Se for instalar do zero, rode o arquivo `supabase.sql` completo no SQL Editor.
 
-1. Acesse a URL do GitHub Pages.
-2. Crie um cadastro com e-mail e senha.
-3. Faça login.
-4. Verifique se as telas internas aparecem.
-5. Clique em sair e confira se volta para a tela de login.
+## Importante
 
-### Teste de pacientes
+Use somente a Publishable Key no arquivo `assets/app.js`. Nunca coloque `service_role`, secret key ou senha do banco no GitHub.
 
-1. Cadastre um paciente fictício.
-2. Edite o paciente.
-3. Pesquise pelo nome.
-4. Exclua o paciente e confira se ele desaparece da lista.
-
-### Teste de responsáveis
-
-1. Cadastre um responsável fictício.
-2. Vincule ao paciente.
-3. Edite o responsável.
-4. Exclua o responsável.
-
-### Teste de ficha financeira
-
-1. Crie uma nova ficha.
-2. Selecione paciente e responsável.
-3. Informe mês, ano, valor por sessão e sessões.
-4. Confira se o sistema calcula total de sessões e valor total.
-5. Gere a descrição da Nota Fiscal.
-6. Salve a ficha.
-7. Abra em **Fichas Salvas**.
-8. Edite a ficha.
-9. Gere o PDF.
-10. Exclua a ficha.
-
-## 6. Observação sobre LGPD e sigilo
-
-Este sistema armazena dados administrativos e pode conter dados relacionados à saúde. Por isso:
-
-- Use login obrigatório.
-- Mantenha Row Level Security habilitado.
-- Não publique chaves secretas.
-- Não coloque dados clínicos sensíveis desnecessários nas fichas financeiras ou descrição de Nota Fiscal.
-- Evite diagnósticos, hipóteses clínicas e detalhes íntimos em campos financeiros.
-- Use dados reais apenas depois de testar a segurança.
-
-## 7. Próximas melhorias possíveis
-
-- Upload real de logo pelo Supabase Storage.
-- Controle de múltiplos profissionais/equipe.
-- Controle de status: aguardando pagamento, pago, NF emitida.
-- Modelo visual mais parecido com a identidade oficial da Clínica ÚNick.
-- Geração de recibos.
-- Exportação em Excel/CSV.
-- Envio automático por e-mail futuramente, usando backend/Edge Functions.
